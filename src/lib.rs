@@ -69,7 +69,44 @@ where
     }
 }
 
-struct CSV {
+pub struct RecordIterator<'a, R>
+where
+    R: Read,
+{
+    parser: &'a CSV,
+    csv: std::iter::Peekable<CSVReaderIterator<R>>,
+}
+
+impl<'a, R> RecordIterator<'a, R>
+where
+    R: Read,
+{
+    pub fn new(csv_source: R, parser: &'a CSV) -> Self {
+        let csv_reader = CSVReader::new(csv_source);
+        RecordIterator {
+            parser,
+            csv: csv_reader.into_iter().peekable(),
+        }
+    }
+}
+
+type Record = Vec<String>;
+
+impl<'a, R> Iterator for RecordIterator<'a, R>
+where
+    R: Read,
+{
+    type Item = Result<Record, String>;
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.csv.peek().is_none() {
+            None
+        } else {
+            Some(self.parser.record(&mut self.csv))
+        }
+    }
+}
+
+pub struct CSV {
     separator: char,
     quote: char,
     headers: Option<Vec<String>>,
@@ -99,6 +136,13 @@ impl CSV {
         self
     }
 
+    pub fn parse<R>(&self, csv_source: R) -> RecordIterator<R>
+    where
+        R: Read,
+    {
+        RecordIterator::new(csv_source, self)
+    }
+
     fn record<R>(&self, csv: &mut std::iter::Peekable<R>) -> Result<Vec<String>, String>
     where
         R: Iterator<Item = char>,
@@ -112,6 +156,10 @@ impl CSV {
                     match csv.peek() {
                         Some(&c) if c == self.separator => {
                             csv.next();
+                            // TODO This needs to be configurable
+                            while let Some(' ') = csv.peek() {
+                                csv.next();
+                            }
                             continue;
                         }
                         Some(&c) if c == '\n' => {
@@ -230,7 +278,29 @@ describe!(csv_tests, {
     pub use super::*;
     describe!(when_csv_is_wellformed, {
         use super::*;
-        it!(should_correctly_parse_rows, {
+        it!(should_correctly_parse_files, {
+            let tests = [(
+                "a,b,c\nd,e,f\ng,h,i\n",
+                vec![
+                    vec!["a", "b", "c"],
+                    vec!["d", "e", "f"],
+                    vec!["g", "h", "i"],
+                ],
+            )];
+            verify_all!(tests.iter().map(|(given, expected)| {
+                let mut csv = CSV::new();
+                let csv = csv.separator(',').quote('"');
+                let found: Vec<Vec<String>> =
+                    csv.parse(given.as_bytes()).filter_map(|v| v.ok()).collect();
+                let expected: Vec<Vec<String>> = expected
+                    .iter()
+                    .map(|v| v.iter().map(|v| v.to_string()).collect())
+                    .collect();
+                that!(found).will_equal(expected)
+            }))
+        });
+
+        it!(should_correctly_parse_records, {
             let tests = [
                 ("a,b,c", vec!["a", "b", "c"]),
                 (",,,", vec!["", "", "", ""]),
