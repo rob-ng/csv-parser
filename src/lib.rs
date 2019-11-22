@@ -1,116 +1,14 @@
 use std::io::{BufRead, BufReader, Read};
 
-struct CSVReader<R>
-where
-    R: Read,
-{
-    buf: BufReader<R>,
-}
-
-impl<R> CSVReader<R>
-where
-    R: Read,
-{
-    pub fn new(to_read: R) -> Self {
-        CSVReader {
-            buf: BufReader::new(to_read),
-        }
-    }
-}
-
-impl<R> IntoIterator for CSVReader<R>
-where
-    R: Read,
-{
-    type Item = char;
-    type IntoIter = CSVReaderIterator<R>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        CSVReaderIterator::new(self)
-    }
-}
-
-struct CSVReaderIterator<R>
-where
-    R: Read,
-{
-    buf: BufReader<R>,
-    curr_line: Vec<char>,
-}
-
-impl<R> CSVReaderIterator<R>
-where
-    R: Read,
-{
-    pub fn new(csv_reader: CSVReader<R>) -> Self {
-        CSVReaderIterator {
-            buf: csv_reader.buf,
-            curr_line: vec![],
-        }
-    }
-}
-
-impl<R> Iterator for CSVReaderIterator<R>
-where
-    R: Read,
-{
-    type Item = char;
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.curr_line.len() == 0 {
-            let mut curr_line = String::new();
-            self.buf.read_line(&mut curr_line);
-            self.curr_line = curr_line.chars().rev().collect();
-        }
-        self.curr_line.pop()
-    }
-}
-
-pub struct RecordIterator<'a, R>
-where
-    R: Read,
-{
-    parser: &'a CSV,
-    csv: std::iter::Peekable<CSVReaderIterator<R>>,
-}
-
-impl<'a, R> RecordIterator<'a, R>
-where
-    R: Read,
-{
-    pub fn new(csv_source: R, parser: &'a CSV) -> Self {
-        let csv_reader = CSVReader::new(csv_source);
-        RecordIterator {
-            parser,
-            csv: csv_reader.into_iter().peekable(),
-        }
-    }
-}
-
-type Record = Vec<String>;
-
-impl<'a, R> Iterator for RecordIterator<'a, R>
-where
-    R: Read,
-{
-    type Item = Result<Record, String>;
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.csv.peek().is_none() {
-            None
-        } else {
-            Some(self.parser.record(&mut self.csv))
-        }
-    }
-}
-
-pub struct CSV {
+pub struct Parser {
     separator: char,
     quote: char,
     headers: Option<Vec<String>>,
 }
 
-impl CSV {
+impl Parser {
     pub fn new() -> Self {
-        CSV {
+        Parser {
             separator: ',',
             quote: '"',
             headers: None,
@@ -254,6 +152,99 @@ impl CSV {
     }
 }
 
+pub struct RecordIterator<'a, R>
+where
+    R: Read,
+{
+    parser: &'a Parser,
+    csv: std::iter::Peekable<SourceIterator<R>>,
+}
+
+impl<'a, R> RecordIterator<'a, R>
+where
+    R: Read,
+{
+    pub fn new(csv_source: R, parser: &'a Parser) -> Self {
+        let csv_reader = Source::new(csv_source);
+        RecordIterator {
+            parser,
+            csv: csv_reader.into_iter().peekable(),
+        }
+    }
+}
+
+type Record = Vec<String>;
+
+impl<'a, R> Iterator for RecordIterator<'a, R>
+where
+    R: Read,
+{
+    type Item = Result<Record, String>;
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.csv.peek().is_none() {
+            None
+        } else {
+            Some(self.parser.record(&mut self.csv))
+        }
+    }
+}
+
+// Private
+struct Source<R>(BufReader<R>);
+
+impl<R> Source<R>
+where
+    R: Read,
+{
+    pub fn new(source: R) -> Self {
+        Source(BufReader::new(source))
+    }
+}
+
+impl<R> IntoIterator for Source<R>
+where
+    R: Read,
+{
+    type Item = char;
+    type IntoIter = SourceIterator<R>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        SourceIterator::new(self)
+    }
+}
+
+struct SourceIterator<R> {
+    source: Source<R>,
+    curr_line: Vec<char>,
+}
+
+impl<R> SourceIterator<R>
+where
+    R: Read,
+{
+    pub fn new(source: Source<R>) -> Self {
+        SourceIterator {
+            source,
+            curr_line: vec![],
+        }
+    }
+}
+
+impl<R> Iterator for SourceIterator<R>
+where
+    R: Read,
+{
+    type Item = char;
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.curr_line.len() == 0 {
+            let mut curr_line = String::new();
+            self.source.0.read_line(&mut curr_line);
+            self.curr_line = curr_line.chars().rev().collect();
+        }
+        self.curr_line.pop()
+    }
+}
+
 #[cfg(test)]
 use jestr::*;
 
@@ -272,7 +263,7 @@ describe!(csv_tests, {
                 ],
             )];
             verify_all!(tests.iter().map(|(given, expected)| {
-                let mut csv = CSV::new();
+                let mut csv = Parser::new();
                 let csv = csv.separator(',').quote('"');
                 let found: Vec<Vec<String>> =
                     csv.parse(given.as_bytes()).filter_map(|v| v.ok()).collect();
@@ -298,9 +289,9 @@ describe!(csv_tests, {
                 ),
             ];
             verify_all!(tests.iter().map(|(given, expected)| {
-                let mut csv = CSV::new();
+                let mut csv = Parser::new();
                 let csv = csv.separator(',').quote('"');
-                let csvreader = CSVReader::new(given.as_bytes());
+                let csvreader = Source::new(given.as_bytes());
                 let found = csv.record(&mut csvreader.into_iter().peekable());
                 let expected = expected.iter().map(|v| v.to_string()).collect();
                 that!(found).will_unwrap_to(expected)
@@ -323,9 +314,9 @@ describe!(csv_tests, {
                 ),
             ];
             verify_all!(tests.iter().map(|&(given, expected)| {
-                let mut csv = CSV::new();
+                let mut csv = Parser::new();
                 let csv = csv.separator(',').quote('"');
-                let csvreader = CSVReader::new(given.as_bytes());
+                let csvreader = Source::new(given.as_bytes());
                 let found = csv.field(&mut csvreader.into_iter().peekable());
                 that!(found).will_unwrap_to(String::from(expected))
             }));
@@ -355,9 +346,9 @@ describe!(csv_tests, {
                         .map(|&(field, reason)| (format!("first,{},last", field), reason))
                         .collect();
                     verify_all!(tests.iter().map(|(given, reason)| {
-                        let mut csv = CSV::new();
+                        let mut csv = Parser::new();
                         let csv = csv.separator(',').quote('"');
-                        let csvreader = CSVReader::new(given.as_bytes());
+                        let csvreader = Source::new(given.as_bytes());
                         let found = csv.record(&mut csvreader.into_iter().peekable());
                         that!(found).will_be_err().because(reason)
                     }));
@@ -367,13 +358,13 @@ describe!(csv_tests, {
             describe!(because_num_fields_doesnt_match_num_headers, {
                 use crate::csv_tests::when_csv_is_malformed::*;
                 it!(should_return_err, {
-                    let mut csv = CSV::new();
+                    let mut csv = Parser::new();
                     let csv = csv
                         .separator(',')
                         .quote('"')
                         .headers(vec![String::from("h1"), String::from("h2")]);
                     let too_many_fields = "a,b,c";
-                    let csvreader = CSVReader::new(too_many_fields.as_bytes());
+                    let csvreader = Source::new(too_many_fields.as_bytes());
                     let found = csv.record(&mut csvreader.into_iter().peekable());
                     verify!(that!(found).will_be_err().because("Should return Err when number of fields in record does not match number of headers"));
                 });
@@ -384,9 +375,9 @@ describe!(csv_tests, {
             use crate::csv_tests::when_csv_is_malformed::*;
             it!(should_return_err_when_field_is_malformed, {
                 verify_all!(MALFORMED_FIELDS.iter().map(|&(given, reason)| {
-                    let mut csv = CSV::new();
+                    let mut csv = Parser::new();
                     let csv = csv.separator(',').quote('"');
-                    let csvreader = CSVReader::new(given.as_bytes());
+                    let csvreader = Source::new(given.as_bytes());
                     let found = csv.field(&mut csvreader.into_iter().peekable());
                     that!(found).will_be_err().because(reason)
                 }));
