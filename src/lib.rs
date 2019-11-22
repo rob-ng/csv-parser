@@ -3,7 +3,7 @@ use std::io::{BufRead, BufReader, Read};
 pub struct Parser {
     separator: char,
     quote: char,
-    headers: Option<Vec<String>>,
+    columns: Option<Vec<String>>,
 }
 
 impl Parser {
@@ -11,7 +11,7 @@ impl Parser {
         Parser {
             separator: ',',
             quote: '"',
-            headers: None,
+            columns: None,
         }
     }
 
@@ -25,8 +25,8 @@ impl Parser {
         self
     }
 
-    pub fn headers(&mut self, headers: Vec<String>) -> &mut Self {
-        self.headers.replace(headers);
+    pub fn columns(&mut self, columns: Vec<String>) -> &mut Self {
+        self.columns.replace(columns);
         self
     }
 
@@ -68,13 +68,13 @@ impl Parser {
             }
         }
 
-        match self.headers.as_ref() {
+        match self.columns.as_ref() {
             None => Ok(fields),
-            Some(headers) if headers.len() == fields.len() => Ok(fields),
-            Some(headers) => Err(format!(
-                "Number of fields {} does not match number of headers {}",
+            Some(columns) if columns.len() == fields.len() => Ok(fields),
+            Some(columns) => Err(format!(
+                "Number of fields {} does not match number of columns {}",
                 fields.len(),
-                headers.len()
+                columns.len()
             )),
         }
     }
@@ -355,18 +355,18 @@ describe!(csv_tests, {
                 });
             });
 
-            describe!(because_num_fields_doesnt_match_num_headers, {
+            describe!(because_num_fields_doesnt_match_num_columns, {
                 use crate::csv_tests::when_csv_is_malformed::*;
                 it!(should_return_err, {
                     let mut csv = Parser::new();
                     let csv = csv
                         .separator(',')
                         .quote('"')
-                        .headers(vec![String::from("h1"), String::from("h2")]);
+                        .columns(vec![String::from("h1"), String::from("h2")]);
                     let too_many_fields = "a,b,c";
                     let csvreader = Source::new(too_many_fields.as_bytes());
                     let found = csv.record(&mut csvreader.into_iter().peekable());
-                    verify!(that!(found).will_be_err().because("Should return Err when number of fields in record does not match number of headers"));
+                    verify!(that!(found).will_be_err().because("Should return Err when number of fields in record does not match number of columns"));
                 });
             });
         });
