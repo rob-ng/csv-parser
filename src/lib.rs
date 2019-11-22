@@ -35,19 +35,17 @@ where
     R: Read,
 {
     buf: BufReader<R>,
-    curr_line: String,
+    curr_line: Vec<char>,
 }
 
 impl<R> CSVReaderIterator<R>
 where
     R: Read,
 {
-    pub fn new(mut csv_reader: CSVReader<R>) -> Self {
-        let mut curr_line = String::new();
-        csv_reader.buf.read_line(&mut curr_line);
+    pub fn new(csv_reader: CSVReader<R>) -> Self {
         CSVReaderIterator {
             buf: csv_reader.buf,
-            curr_line,
+            curr_line: vec![],
         }
     }
 }
@@ -59,13 +57,11 @@ where
     type Item = char;
     fn next(&mut self) -> Option<Self::Item> {
         if self.curr_line.len() == 0 {
-            self.buf.read_line(&mut self.curr_line);
+            let mut curr_line = String::new();
+            self.buf.read_line(&mut curr_line);
+            self.curr_line = curr_line.chars().rev().collect();
         }
-        let next = self.curr_line.chars().next();
-        if next.is_some() {
-            self.curr_line.drain(0..1);
-        }
-        next
+        self.curr_line.pop()
     }
 }
 
@@ -149,28 +145,28 @@ impl CSV {
     {
         let mut fields = vec![];
 
-        while let field = self.field(csv) {
-            match field {
-                Ok(field) => {
-                    fields.push(field);
-                    match csv.peek() {
-                        Some(&c) if c == self.separator => {
-                            csv.next();
-                            // TODO This needs to be configurable
-                            while let Some(' ') = csv.peek() {
-                                csv.next();
-                            }
-                            continue;
-                        }
-                        Some(&c) if c == '\n' => {
-                            csv.next();
-                            break;
-                        }
-                        Some(c) => unreachable!(),
-                        None => break,
-                    }
-                }
+        loop {
+            let field = match self.field(csv) {
+                Ok(field) => field,
                 Err(msg) => return Err(format!("Malformed field: {}", msg)),
+            };
+
+            fields.push(field);
+            match csv.peek() {
+                Some(&c) if c == self.separator => {
+                    csv.next();
+                    // TODO This needs to be configurable
+                    while let Some(' ') = csv.peek() {
+                        csv.next();
+                    }
+                    continue;
+                }
+                Some(&c) if c == '\n' => {
+                    csv.next();
+                    break;
+                }
+                Some(_) => unreachable!(),
+                None => break,
             }
         }
 
@@ -202,10 +198,10 @@ impl CSV {
                         field.push(self.quote);
                         csv.next();
                     }
-                    Some(&c) if c == ',' || c == '\n' => {
+                    Some(&c) if c == self.separator || c == '\n' => {
                         return Ok(field);
                     }
-                    Some(&c) => {
+                    Some(_) => {
                         return Err(String::from(
                             "String fields must be quoted in their entirety",
                         ))
@@ -242,18 +238,6 @@ impl CSV {
                 None => break,
             }
             csv.next();
-        }
-
-        for c in csv {
-            if c == self.quote {
-                return Err(String::from(
-                    "Unquoted fields cannot contain quatation marks.",
-                ));
-            }
-            if c == self.separator || c == '\n' {
-                return Ok(field);
-            }
-            field.push(c);
         }
 
         Ok(field)

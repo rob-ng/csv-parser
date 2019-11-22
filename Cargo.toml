@@ -8,3 +8,10 @@ edition = "2018"
 
 [dependencies]
 jestr = { path = "../jestr" }
+
+[dev-dependencies]
+criterion = "0.3"
+
+[[bench]]
+name = "large_csv"
+harness = false
