@@ -1,17 +1,25 @@
 use std::io::{BufRead, BufReader, Read};
 
-pub struct Parser {
+pub struct Parser<'a> {
     separator: char,
     quote: char,
     columns: Option<Vec<String>>,
+
+    should_ltrim: bool,
+    ignore_before_field: &'a Fn(char) -> bool,
+    //rtrim: bool,
+    //skip_empty_rows: bool,
+    //max_record_size: usize
 }
 
-impl Parser {
+impl<'a> Parser<'a> {
     pub fn new() -> Self {
         Parser {
             separator: ',',
             quote: '"',
             columns: None,
+            should_ltrim: false,
+            ignore_before_field: &|_| false,
         }
     }
 
@@ -27,6 +35,12 @@ impl Parser {
 
     pub fn columns(&mut self, columns: Vec<String>) -> &mut Self {
         self.columns.replace(columns);
+        self
+    }
+
+    pub fn ltrim(&mut self) -> &mut Self {
+        self.should_ltrim = true;
+        self.ignore_before_field = &|c| c.is_whitespace();
         self
     }
 
@@ -53,10 +67,6 @@ impl Parser {
             match csv.peek() {
                 Some(&c) if c == self.separator => {
                     csv.next();
-                    // TODO This needs to be configurable
-                    while let Some(' ') = csv.peek() {
-                        csv.next();
-                    }
                     continue;
                 }
                 Some(&c) if c == '\n' => {
@@ -79,11 +89,28 @@ impl Parser {
         }
     }
 
+    fn field<R>(&self, csv: &mut std::iter::Peekable<R>) -> Result<String, String>
+    where
+        R: Iterator<Item = char>,
+    {
+        loop {
+            match csv.peek() {
+                Some(&c) if (self.ignore_before_field)(c) => csv.next(),
+                _ => break,
+            };
+        }
+
+        match csv.peek() {
+            Some(&c) if c == self.quote => self.string(csv),
+            _ => self.text(csv),
+        }
+    }
+
     fn string<R>(&self, csv: &mut std::iter::Peekable<R>) -> Result<String, String>
     where
         R: Iterator<Item = char>,
     {
-        // Remove initial quoation mark.
+        // Remove initial quotation mark.
         csv.next();
 
         let mut field = String::new();
@@ -116,7 +143,7 @@ impl Parser {
         Err(String::from("String is missing closing quotation"))
     }
 
-    fn text<'a, R>(&self, csv: &mut std::iter::Peekable<R>) -> Result<String, String>
+    fn text<R>(&self, csv: &mut std::iter::Peekable<R>) -> Result<String, String>
     where
         R: Iterator<Item = char>,
     {
@@ -125,8 +152,9 @@ impl Parser {
         loop {
             match csv.peek() {
                 Some(&c) if c == self.quote => {
+                    // TODO Format to include `Parser`'s quotation mark
                     return Err(String::from(
-                        "Unquoted fields cannot contain quatation marks.",
+                        "Unquoted fields cannot contain quotation marks.",
                     ));
                 }
                 Some(&c) if c == self.separator || c == '\n' => {
@@ -140,23 +168,13 @@ impl Parser {
 
         Ok(field)
     }
-
-    fn field<'a, R>(&self, csv: &mut std::iter::Peekable<R>) -> Result<String, String>
-    where
-        R: Iterator<Item = char>,
-    {
-        match csv.peek() {
-            Some(&c) if c == self.quote => self.string(csv),
-            _ => self.text(csv),
-        }
-    }
 }
 
 pub struct RecordIterator<'a, R>
 where
     R: Read,
 {
-    parser: &'a Parser,
+    parser: &'a Parser<'a>,
     csv: std::iter::Peekable<SourceIterator<R>>,
 }
 
@@ -249,139 +267,161 @@ where
 use jestr::*;
 
 #[cfg(test)]
-describe!(csv_tests, {
+describe!(parser_tests, {
     pub use super::*;
+
+    pub fn run_tests_pass(parser: &Parser, tests: &[(&str, Vec<Vec<&str>>, &str)]) {
+        verify_all!(tests.iter().map(|(given, expected, reason)| {
+            let found: Result<Vec<Vec<String>>, String> = parser.parse(given.as_bytes()).collect();
+            match &found {
+                Ok(found) => {
+                    let expected: Vec<Vec<String>> = expected
+                        .iter()
+                        .map(|v| v.iter().map(|v| v.to_string()).collect())
+                        .collect();
+                    that!(found).will_equal(&expected).because(reason)
+                }
+                Err(_) => that!(found).will_be_ok(),
+            }
+        }));
+    }
+
+    pub fn run_tests_fail(parser: &Parser, tests: &[(&str, &str)]) {
+        verify_all!(tests.iter().map(|(given, reason)| {
+            let found: Result<Vec<Vec<String>>, String> = parser.parse(given.as_bytes()).collect();
+            that!(found).will_be_err().because(reason)
+        }));
+    }
+
+    describe!(configuration, {
+        describe!(ltrim, {
+            describe!(when_on, {
+                use crate::parser_tests::*;
+                it!(should_ignore_whitespace_to_left_of_fields, {
+                    let tests = [(
+                        "   a,  \u{A0}b,   \u{3000}c\n d,   e,f\n   \"g\",\t\"h\",\t  \"i\"\n",
+                        vec![
+                            vec!["a", "b", "c"],
+                            vec!["d", "e", "f"],
+                            vec!["g", "h", "i"],
+                        ],
+                        "Turning on `ltrim` should remove all types of whitespace before fields",
+                    )];
+                    let mut parser = Parser::new();
+                    let parser = parser.separator(',').quote('"').ltrim();
+                    run_tests_pass(parser, &tests);
+                });
+            });
+
+            describe!(when_off, {
+                use crate::parser_tests::*;
+                it!(should_keep_whitespace_to_left_of_fields, {
+                    let tests = [(
+                        "   a,  \u{A0}b,   \u{3000}c\n d,   e,f\n   g,\th,\t  i\n",
+                        vec![
+                            vec!["   a", "  \u{A0}b", "   \u{3000}c"],
+                            vec![" d", "   e", "f"],
+                            vec!["   g", "\th", "\t  i"],
+                        ],
+                        "Whitespace before fields should not be removed when `ltrim` is off (default)",
+                    )];
+                    let mut parser = Parser::new();
+                    let parser = parser.separator(',').quote('"');
+                    run_tests_pass(parser, &tests);
+                });
+            });
+        });
+    });
+
     describe!(when_csv_is_wellformed, {
         use super::*;
         it!(should_correctly_parse_files, {
-            let tests = [(
-                "a,b,c\nd,e,f\ng,h,i\n",
-                vec![
-                    vec!["a", "b", "c"],
-                    vec!["d", "e", "f"],
-                    vec!["g", "h", "i"],
-                ],
-            )];
-            verify_all!(tests.iter().map(|(given, expected)| {
-                let mut csv = Parser::new();
-                let csv = csv.separator(',').quote('"');
-                let found: Vec<Vec<String>> =
-                    csv.parse(given.as_bytes()).filter_map(|v| v.ok()).collect();
-                let expected: Vec<Vec<String>> = expected
-                    .iter()
-                    .map(|v| v.iter().map(|v| v.to_string()).collect())
-                    .collect();
-                that!(found).will_equal(expected)
-            }))
-        });
-
-        it!(should_correctly_parse_records, {
             let tests = [
-                ("a,b,c", vec!["a", "b", "c"]),
-                (",,,", vec!["", "", "", ""]),
-                ("abc\ndef", vec!["abc"]),
-                ("\"abc\ndef\"", vec!["abc\ndef"]),
-                ("\"abc,def\"", vec!["abc,def"]),
-                ("\"abc\n\"\ndef\n", vec!["abc\n"]),
+                (
+                    "a,b,c\nd,e,f\ng,h,i\n",
+                    vec![
+                        vec!["a", "b", "c"],
+                        vec!["d", "e", "f"],
+                        vec!["g", "h", "i"],
+                    ],
+                    "Should parse entire CSV successfully when all records are well-formed",
+                ),
+                (
+                    "\"abc\n\"\ndef\n",
+                    vec![vec!["abc\n"], vec!["def"]],
+                    "Should ignore newlines inside quoted fields",
+                ),
+                (
+                    "\"abc,\"\ndef\n",
+                    vec![vec!["abc,"], vec!["def"]],
+                    "Should ignore separators inside quoted fields",
+                ),
                 (
                     "abc,\"def\n\"\"ghi\"\"\",jkl\nmno",
-                    vec!["abc", "def\n\"ghi\"", "jkl"],
+                    vec![vec!["abc", "def\n\"ghi\"", "jkl"], vec!["mno"]],
+                    "Should handle combinations of quoted and unquoted fields",
                 ),
-            ];
-            verify_all!(tests.iter().map(|(given, expected)| {
-                let mut csv = Parser::new();
-                let csv = csv.separator(',').quote('"');
-                let csvreader = Source::new(given.as_bytes());
-                let found = csv.record(&mut csvreader.into_iter().peekable());
-                let expected = expected.iter().map(|v| v.to_string()).collect();
-                that!(found).will_unwrap_to(expected)
-            }));
-        });
-
-        it!(should_correctly_parse_fields, {
-            let tests = [
-                (",", ""),
-                ("abc", "abc"),
-                ("abc,def", "abc"),
-                ("abc\ndef", "abc"),
-                ("\"abc,def\"", "abc,def"),
-                ("\"abc\ndef\"", "abc\ndef"),
-                ("\"abc\ndef\"\n", "abc\ndef"),
-                ("\"\"\"abc\"\"def\"", "\"abc\"def"),
                 (
-                    "\"Quote \"\"Inner quote and \"\"even more inner quote\"\"\"\"\"",
-                    "Quote \"Inner quote and \"even more inner quote\"\"",
+                    "\"\"\"\"\"\"\"\"\"a\"\"\"\"\"\"\"\"\",b,c\nd,e,f",
+                    vec![vec!["\"\"\"\"a\"\"\"\"", "b", "c"], vec!["d", "e", "f"]],
+                    "Should handle arbitrary numbers of escaped inner quotes",
+                ),
+                (
+                    ",,,\na,b,c,d",
+                    vec![vec!["", "", "", ""], vec!["a", "b", "c", "d"]],
+                    "Should allow empty fields",
                 ),
             ];
-            verify_all!(tests.iter().map(|&(given, expected)| {
-                let mut csv = Parser::new();
-                let csv = csv.separator(',').quote('"');
-                let csvreader = Source::new(given.as_bytes());
-                let found = csv.field(&mut csvreader.into_iter().peekable());
-                that!(found).will_unwrap_to(String::from(expected))
-            }));
+            let mut parser = Parser::new();
+            let parser = parser.separator(',').quote('"');
+            run_tests_pass(parser, &tests);
         });
     });
 
     describe!(when_csv_is_malformed, {
-        use super::*;
-        pub const MALFORMED_FIELDS: &[(&str, &str)] = &[
-            ("ab\"cd", "Non-string fields cannot contain quotation marks"),
-            (
-                "\"abc\"def",
-                "String fields must be quoted in their entirety",
-            ),
-            (
-                "\"def\n\"\"ghi\"\"",
-                "String fields must include both open and closing quotations",
-            ),
-        ];
-
-        describe!(because_row_is_malformed, {
-            describe!(because_field_is_malformed, {
-                use crate::csv_tests::when_csv_is_malformed::*;
-                it!(should_return_err, {
-                    let tests: Vec<(String, &str)> = MALFORMED_FIELDS
-                        .iter()
-                        .map(|&(field, reason)| (format!("first,{},last", field), reason))
-                        .collect();
-                    verify_all!(tests.iter().map(|(given, reason)| {
-                        let mut csv = Parser::new();
-                        let csv = csv.separator(',').quote('"');
-                        let csvreader = Source::new(given.as_bytes());
-                        let found = csv.record(&mut csvreader.into_iter().peekable());
-                        that!(found).will_be_err().because(reason)
-                    }));
-                });
+        describe!(because_a_field_is_malformed, {
+            pub use crate::parser_tests::*;
+            it!(should_return_an_err_when_parse_results_are_collected, {
+                let tests = [
+                    ("ab\"cd", "Non-quoted fields cannot contain quotation marks"),
+                    (
+                        "\"abc\"def",
+                        "Quoted fields cannot contain trailing unquoted values",
+                    ),
+                    (
+                        "\"def\n\"\"ghi\"\"",
+                        "Quoted fields must include both open and closing quotations",
+                    ),
+                ];
+                let mut parser = Parser::new();
+                let parser = parser.separator(',').quote('"');
+                run_tests_fail(parser, &tests);
             });
 
-            describe!(because_num_fields_doesnt_match_num_columns, {
-                use crate::csv_tests::when_csv_is_malformed::*;
-                it!(should_return_err, {
-                    let mut csv = Parser::new();
-                    let csv = csv
-                        .separator(',')
-                        .quote('"')
-                        .columns(vec![String::from("h1"), String::from("h2")]);
-                    let too_many_fields = "a,b,c";
-                    let csvreader = Source::new(too_many_fields.as_bytes());
-                    let found = csv.record(&mut csvreader.into_iter().peekable());
-                    verify!(that!(found).will_be_err().because("Should return Err when number of fields in record does not match number of columns"));
-                });
-            });
-        });
-
-        describe!(because_field_is_malformed, {
-            use crate::csv_tests::when_csv_is_malformed::*;
-            it!(should_return_err_when_field_is_malformed, {
-                verify_all!(MALFORMED_FIELDS.iter().map(|&(given, reason)| {
-                    let mut csv = Parser::new();
-                    let csv = csv.separator(',').quote('"');
-                    let csvreader = Source::new(given.as_bytes());
-                    let found = csv.field(&mut csvreader.into_iter().peekable());
-                    that!(found).will_be_err().because(reason)
-                }));
-            });
+            describe!(
+                because_a_record_has_more_or_fewer_fields_than_number_of_columns,
+                {
+                    pub use crate::parser_tests::*;
+                    it!(should_return_err, {
+                        let tests = [
+                            (
+                                "a,b\nd",
+                                "Records cannot have fewer fields than there are columns",
+                            ),
+                            (
+                                "a,b\nd,e,f",
+                                "Records cannot have more fields than there are columns",
+                            ),
+                        ];
+                        let mut parser = Parser::new();
+                        let parser = parser
+                            .separator(',')
+                            .quote('"')
+                            .columns(vec![String::from("h1"), String::from("h2")]);
+                        run_tests_fail(parser, &tests);
+                    });
+                }
+            );
         });
     });
 });
