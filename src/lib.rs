@@ -6,8 +6,9 @@ pub struct Parser<'a> {
     columns: Option<Vec<String>>,
 
     should_ltrim: bool,
-    ignore_before_field: &'a Fn(char) -> bool,
-    //rtrim: bool,
+    ignore_before_field: &'a dyn Fn(char) -> bool,
+    should_rtrim: bool,
+    ignore_after_field: &'a dyn Fn(char) -> bool,
     //skip_empty_rows: bool,
     //max_record_size: usize
 }
@@ -20,6 +21,8 @@ impl<'a> Parser<'a> {
             columns: None,
             should_ltrim: false,
             ignore_before_field: &|_| false,
+            should_rtrim: false,
+            ignore_after_field: &|_| false,
         }
     }
 
@@ -41,6 +44,12 @@ impl<'a> Parser<'a> {
     pub fn ltrim(&mut self) -> &mut Self {
         self.should_ltrim = true;
         self.ignore_before_field = &|c| c.is_whitespace();
+        self
+    }
+
+    pub fn rtrim(&mut self) -> &mut Self {
+        self.should_rtrim = true;
+        self.ignore_after_field = &|c| c.is_whitespace();
         self
     }
 
@@ -127,9 +136,18 @@ impl<'a> Parser<'a> {
                         return Ok(field);
                     }
                     Some(_) => {
-                        return Err(String::from(
-                            "String fields must be quoted in their entirety",
-                        ))
+                        loop {
+                            match csv.peek() {
+                                Some(&c) if (self.ignore_after_field)(c) => csv.next(),
+                                _ => break,
+                            };
+                        }
+                        return match csv.peek() {
+                            Some(&c) if c != self.separator => Err(String::from(
+                                "String fields must be quoted in their entirety",
+                            )),
+                            _ => Ok(field)
+                        };
                     }
                     None => {
                         return Ok(field);
@@ -147,7 +165,7 @@ impl<'a> Parser<'a> {
     where
         R: Iterator<Item = char>,
     {
-        let mut field = String::new();
+        let mut field = vec![];
 
         loop {
             match csv.peek() {
@@ -158,7 +176,13 @@ impl<'a> Parser<'a> {
                     ));
                 }
                 Some(&c) if c == self.separator || c == '\n' => {
-                    return Ok(field);
+                    loop {
+                        match field.last() {
+                            Some(&c) if (self.ignore_after_field)(c) => field.pop(),
+                            _ => break,
+                        };
+                    }
+                    break;
                 }
                 Some(&c) => field.push(c),
                 None => break,
@@ -166,6 +190,7 @@ impl<'a> Parser<'a> {
             csv.next();
         }
 
+        let field: String = field.iter().collect();
         Ok(field)
     }
 }
@@ -294,6 +319,43 @@ describe!(parser_tests, {
     }
 
     describe!(configuration, {
+        describe!(rtrim, {
+            describe!(when_on, {
+                use crate::parser_tests::*;
+                it!(should_ignore_whitespace_to_right_of_fields, {
+                    let tests = [(
+                        "a   ,b\u{A0}  ,c   \u{3000}\nd ,e ,f\n\"g\"   ,\"h\"\t,\"i\"\t  \n",
+                        vec![
+                            vec!["a", "b", "c"],
+                            vec!["d", "e", "f"],
+                            vec!["g", "h", "i"],
+                        ],
+                        "Turning on `ltrim` should remove all types of whitespace before fields",
+                    )];
+                    let mut parser = Parser::new();
+                    let parser = parser.separator(',').quote('"').rtrim();
+                    run_tests_pass(parser, &tests);
+                });
+            });
+
+            describe!(when_off, {
+                use crate::parser_tests::*;
+                it!(should_keep_whitespace_to_left_of_fields, {
+                    let tests = [(
+                        "a   ,b\u{A0}  ,c   \u{3000}\nd ,e ,f\n",
+                        vec![
+                            vec!["a   ", "b\u{A0}  ", "c   \u{3000}"],
+                            vec!["d ", "e ", "f"],
+                        ],
+                        "Whitespace after fields should not be removed when `rtrim` is off (default)",
+                    )];
+                    let mut parser = Parser::new();
+                    let parser = parser.separator(',').quote('"');
+                    run_tests_pass(parser, &tests);
+                });
+            });
+        });
+
         describe!(ltrim, {
             describe!(when_on, {
                 use crate::parser_tests::*;
