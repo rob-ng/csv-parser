@@ -1,7 +1,9 @@
 use std::io::{BufRead, BufReader, Read};
 
+type Result<T> = std::result::Result<T, String>;
+
 pub struct Parser<'a> {
-    separator: char,
+     separator: char,
     quote: char,
     columns: Option<Vec<String>>,
 
@@ -9,7 +11,7 @@ pub struct Parser<'a> {
     ignore_before_field: &'a dyn Fn(char) -> bool,
     should_rtrim: bool,
     ignore_after_field: &'a dyn Fn(char) -> bool,
-    //skip_empty_rows: bool,
+    //should_skip_empty_rows: bool,
     //max_record_size: usize
 }
 
@@ -19,20 +21,20 @@ impl<'a> Parser<'a> {
             separator: ',',
             quote: '"',
             columns: None,
-            should_ltrim: false,
-            ignore_before_field: &|_| false,
-            should_rtrim: false,
-            ignore_after_field: &|_| false,
+             should_ltrim: false,
+             ignore_before_field: &|_| false,
+             should_rtrim: false,
+             ignore_after_field: &|_| false,
         }
     }
 
     pub fn separator(&mut self, separator: char) -> &mut Self {
-        self.separator = separator;
+         self.separator = separator;
         self
     }
 
     pub fn quote(&mut self, quote: char) -> &mut Self {
-        self.quote = quote;
+         self.quote = quote;
         self
     }
 
@@ -60,7 +62,7 @@ impl<'a> Parser<'a> {
         RecordIterator::new(csv_source, self)
     }
 
-    fn record<R>(&self, csv: &mut std::iter::Peekable<R>) -> Result<Vec<String>, String>
+    fn record<R>(&self, csv: &mut std::iter::Peekable<R>) -> Result<Vec<String>>
     where
         R: Iterator<Item = char>,
     {
@@ -73,6 +75,7 @@ impl<'a> Parser<'a> {
             };
 
             fields.push(field);
+            // Handle ',' after last field. Should be error.
             match csv.peek() {
                 Some(&c) if c == self.separator => {
                     csv.next();
@@ -98,24 +101,17 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn field<R>(&self, csv: &mut std::iter::Peekable<R>) -> Result<String, String>
+    fn field<R>(&self, csv: &mut std::iter::Peekable<R>) -> Result<String>
     where
         R: Iterator<Item = char>,
     {
-        loop {
-            match csv.peek() {
-                Some(&c) if (self.ignore_before_field)(c) => csv.next(),
-                _ => break,
-            };
-        }
-
         match csv.peek() {
             Some(&c) if c == self.quote => self.string(csv),
             _ => self.text(csv),
         }
     }
 
-    fn string<R>(&self, csv: &mut std::iter::Peekable<R>) -> Result<String, String>
+    fn string<R>(&self, csv: &mut std::iter::Peekable<R>) -> Result<String>
     where
         R: Iterator<Item = char>,
     {
@@ -132,26 +128,10 @@ impl<'a> Parser<'a> {
                         field.push(self.quote);
                         csv.next();
                     }
-                    Some(&c) if c == self.separator || c == '\n' => {
-                        return Ok(field);
-                    }
-                    Some(_) => {
-                        loop {
-                            match csv.peek() {
-                                Some(&c) if (self.ignore_after_field)(c) => csv.next(),
-                                _ => break,
-                            };
-                        }
-                        return match csv.peek() {
-                            Some(&c) if c != self.separator => Err(String::from(
-                                "String fields must be quoted in their entirety",
-                            )),
-                            _ => Ok(field)
-                        };
-                    }
-                    None => {
-                        return Ok(field);
-                    }
+                    Some(&c) if c != self.separator && c != '\n' => return Err(String::from(
+                        "String fields must be quoted in their entirety",
+                    )),     
+                    _ => return Ok(field)
                 }
             } else {
                 field.push(c);
@@ -161,7 +141,7 @@ impl<'a> Parser<'a> {
         Err(String::from("String is missing closing quotation"))
     }
 
-    fn text<R>(&self, csv: &mut std::iter::Peekable<R>) -> Result<String, String>
+    fn text<R>(&self, csv: &mut std::iter::Peekable<R>) -> Result<String>
     where
         R: Iterator<Item = char>,
     {
@@ -169,25 +149,25 @@ impl<'a> Parser<'a> {
 
         loop {
             match csv.peek() {
-                Some(&c) if c == self.quote => {
-                    // TODO Format to include `Parser`'s quotation mark
-                    return Err(String::from(
-                        "Unquoted fields cannot contain quotation marks.",
-                    ));
-                }
-                Some(&c) if c == self.separator || c == '\n' => {
-                    loop {
-                        match field.last() {
-                            Some(&c) if (self.ignore_after_field)(c) => field.pop(),
-                            _ => break,
-                        };
-                    }
-                    break;
-                }
-                Some(&c) => field.push(c),
-                None => break,
+                Some(&c) if (self.ignore_before_field)(c) => csv.next(),
+                _ => break
+            };
+        }
+
+        loop {
+            match csv.peek() {
+                Some(&c) if c == self.quote => return Err(format!("Unquoted fields cannot contain quote character: `{}`", self.quote)),
+                Some(&c) if c != self.separator && c != '\n' => field.push(c),
+                _ => break
             }
             csv.next();
+        }
+
+        loop {
+            match field.last() {
+                Some(&c) if (self.ignore_after_field)(c) => field.pop(),
+                _ => break
+            };
         }
 
         let field: String = field.iter().collect();
@@ -222,7 +202,7 @@ impl<'a, R> Iterator for RecordIterator<'a, R>
 where
     R: Read,
 {
-    type Item = Result<Record, String>;
+    type Item = Result<Record>;
     fn next(&mut self) -> Option<Self::Item> {
         if self.csv.peek().is_none() {
             None
@@ -297,7 +277,7 @@ describe!(parser_tests, {
 
     pub fn run_tests_pass(parser: &Parser, tests: &[(&str, Vec<Vec<&str>>, &str)]) {
         verify_all!(tests.iter().map(|(given, expected, reason)| {
-            let found: Result<Vec<Vec<String>>, String> = parser.parse(given.as_bytes()).collect();
+            let found: Result<Vec<Vec<String>>> = parser.parse(given.as_bytes()).collect();
             match &found {
                 Ok(found) => {
                     let expected: Vec<Vec<String>> = expected
@@ -313,7 +293,7 @@ describe!(parser_tests, {
 
     pub fn run_tests_fail(parser: &Parser, tests: &[(&str, &str)]) {
         verify_all!(tests.iter().map(|(given, reason)| {
-            let found: Result<Vec<Vec<String>>, String> = parser.parse(given.as_bytes()).collect();
+            let found: Result<Vec<Vec<String>>> = parser.parse(given.as_bytes()).collect();
             that!(found).will_be_err().because(reason)
         }));
     }
@@ -322,9 +302,9 @@ describe!(parser_tests, {
         describe!(rtrim, {
             describe!(when_on, {
                 use crate::parser_tests::*;
-                it!(should_ignore_whitespace_to_right_of_fields, {
+                it!(should_ignore_whitespace_to_left_of_fields, {
                     let tests = [(
-                        "a   ,b\u{A0}  ,c   \u{3000}\nd ,e ,f\n\"g\"   ,\"h\"\t,\"i\"\t  \n",
+                        "a   ,b  \u{A0},c   \u{3000}\nd ,e   ,f\ng \t\t,h,i \u{A0}\u{3000}\t",
                         vec![
                             vec!["a", "b", "c"],
                             vec!["d", "e", "f"],
@@ -342,12 +322,13 @@ describe!(parser_tests, {
                 use crate::parser_tests::*;
                 it!(should_keep_whitespace_to_left_of_fields, {
                     let tests = [(
-                        "a   ,b\u{A0}  ,c   \u{3000}\nd ,e ,f\n",
+                        "a   ,b  \u{A0},c   \u{3000}\nd ,e   ,f\ng \t\t,h,i \u{A0}\u{3000}\t",
                         vec![
-                            vec!["a   ", "b\u{A0}  ", "c   \u{3000}"],
-                            vec!["d ", "e ", "f"],
+                            vec!["a   ", "b  \u{A0}", "c   \u{3000}"],
+                            vec!["d ", "e   ", "f"],
+                            vec!["g \t\t", "h", "i \u{A0}\u{3000}\t"],
                         ],
-                        "Whitespace after fields should not be removed when `rtrim` is off (default)",
+                        "Whitespace before fields should not be removed when `ltrim` is off (default)",
                     )];
                     let mut parser = Parser::new();
                     let parser = parser.separator(',').quote('"');
@@ -361,7 +342,7 @@ describe!(parser_tests, {
                 use crate::parser_tests::*;
                 it!(should_ignore_whitespace_to_left_of_fields, {
                     let tests = [(
-                        "   a,  \u{A0}b,   \u{3000}c\n d,   e,f\n   \"g\",\t\"h\",\t  \"i\"\n",
+                        "   a,  \u{A0}b,   \u{3000}c\n d,   e,f\n \t\tg,h, \u{A0}\u{3000}\ti",
                         vec![
                             vec!["a", "b", "c"],
                             vec!["d", "e", "f"],
@@ -379,11 +360,11 @@ describe!(parser_tests, {
                 use crate::parser_tests::*;
                 it!(should_keep_whitespace_to_left_of_fields, {
                     let tests = [(
-                        "   a,  \u{A0}b,   \u{3000}c\n d,   e,f\n   g,\th,\t  i\n",
+                        "   a,  \u{A0}b,   \u{3000}c\n d,   e,f\n \t\tg,h, \u{A0}\u{3000}\ti",
                         vec![
                             vec!["   a", "  \u{A0}b", "   \u{3000}c"],
                             vec![" d", "   e", "f"],
-                            vec!["   g", "\th", "\t  i"],
+                            vec![" \t\tg", "h", " \u{A0}\u{3000}\ti"],
                         ],
                         "Whitespace before fields should not be removed when `ltrim` is off (default)",
                     )];
