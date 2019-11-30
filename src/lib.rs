@@ -2,6 +2,7 @@ use std::io::{BufRead, BufReader, Read};
 
 type Result<T> = std::result::Result<T, String>;
 
+#[derive(Clone)]
 pub struct Parser<'a> {
      separator: char,
     quote: char,
@@ -11,6 +12,7 @@ pub struct Parser<'a> {
     ignore_before_field: &'a dyn Fn(char) -> bool,
     should_rtrim: bool,
     ignore_after_field: &'a dyn Fn(char) -> bool,
+    should_detect_header: bool
     //should_skip_empty_rows: bool,
     //max_record_size: usize
 }
@@ -25,6 +27,7 @@ impl<'a> Parser<'a> {
              ignore_before_field: &|_| false,
              should_rtrim: false,
              ignore_after_field: &|_| false,
+             should_detect_header: false
         }
     }
 
@@ -55,14 +58,19 @@ impl<'a> Parser<'a> {
         self
     }
 
-    pub fn parse<R>(&self, csv_source: R) -> RecordIterator<R>
+    pub fn detect_header(&mut self) -> &mut Self {
+        self.should_detect_header = true;
+        self
+    }
+
+    pub fn parse<R>(&self, csv_source: R) -> RecordIterator<'a, R>
     where
         R: Read,
     {
-        RecordIterator::new(csv_source, self)
+        RecordIterator::new(csv_source, self.clone())
     }
 
-    fn record<R>(&self, csv: &mut std::iter::Peekable<R>) -> Result<Vec<String>>
+    fn record<R>(&mut self, csv: &mut std::iter::Peekable<R>) -> Result<Option<Vec<String>>>
     where
         R: Iterator<Item = char>,
     {
@@ -75,7 +83,6 @@ impl<'a> Parser<'a> {
             };
 
             fields.push(field);
-            // Handle ',' after last field. Should be error.
             match csv.peek() {
                 Some(&c) if c == self.separator => {
                     csv.next();
@@ -90,9 +97,17 @@ impl<'a> Parser<'a> {
             }
         }
 
-        match self.columns.as_ref() {
-            None => Ok(fields),
-            Some(columns) if columns.len() == fields.len() => Ok(fields),
+        match self.columns.as_mut() {
+            None if self.should_detect_header => {
+                self.columns.replace(fields);
+                Ok(None)
+            },
+            None => {
+                let standin_columns = vec![String::from(""); fields.len()];
+                self.columns.replace(standin_columns);
+                Ok(Some(fields))
+            },
+            Some(columns) if columns.len() == fields.len() => Ok(Some(fields)),
             Some(columns) => Err(format!(
                 "Number of fields {} does not match number of columns {}",
                 fields.len(),
@@ -179,7 +194,7 @@ pub struct RecordIterator<'a, R>
 where
     R: Read,
 {
-    parser: &'a Parser<'a>,
+    parser: Parser<'a>,
     csv: std::iter::Peekable<SourceIterator<R>>,
 }
 
@@ -187,14 +202,14 @@ impl<'a, R> RecordIterator<'a, R>
 where
     R: Read,
 {
-    pub fn new(csv_source: R, parser: &'a Parser) -> Self {
+    pub fn new(csv_source: R, parser: Parser<'a>) -> Self {
         let csv_reader = Source::new(csv_source);
         RecordIterator {
             parser,
             csv: csv_reader.into_iter().peekable(),
         }
     }
-}
+} 
 
 type Record = Vec<String>;
 
@@ -207,7 +222,11 @@ where
         if self.csv.peek().is_none() {
             None
         } else {
-            Some(self.parser.record(&mut self.csv))
+            match self.parser.record(&mut self.csv) {
+                Ok(Some(record)) => Some(Ok(record)),
+                Ok(None) => self.next(),
+                Err(msg) => Some(Err(msg))
+            }
         }
     }
 }
@@ -275,30 +294,69 @@ use jestr::*;
 describe!(parser_tests, {
     pub use super::*;
 
-    pub fn run_tests_pass(parser: &Parser, tests: &[(&str, Vec<Vec<&str>>, &str)]) {
+    pub fn run_tests_pass(parser: Parser, tests: &[(&str, Vec<Vec<&str>>, &str)]) {
         verify_all!(tests.iter().map(|(given, expected, reason)| {
             let found: Result<Vec<Vec<String>>> = parser.parse(given.as_bytes()).collect();
+            let reason = format!("{}. Given: {}", reason, given);
             match &found {
                 Ok(found) => {
                     let expected: Vec<Vec<String>> = expected
                         .iter()
                         .map(|v| v.iter().map(|v| v.to_string()).collect())
                         .collect();
-                    that!(found).will_equal(&expected).because(reason)
+                    that!(found).will_equal(&expected).because(&reason) 
                 }
-                Err(_) => that!(found).will_be_ok(),
+                Err(_) => that!(found).will_be_ok().because(&reason),
             }
         }));
     }
 
-    pub fn run_tests_fail(parser: &Parser, tests: &[(&str, &str)]) {
+    pub fn run_tests_fail(parser: Parser, tests: &[(&str, &str)]) {
         verify_all!(tests.iter().map(|(given, reason)| {
             let found: Result<Vec<Vec<String>>> = parser.parse(given.as_bytes()).collect();
-            that!(found).will_be_err().because(reason)
+            let reason = format!("{}. Given: {}", reason, given);
+            that!(found).will_be_err().because(&reason)
         }));
     }
 
     describe!(configuration, {
+        describe!(detect_header, {
+            describe!(when_on, {
+                use crate::parser_tests::*;
+                it!(should_treat_first_row_in_csv_as_header_instead_of_record, {
+                    let tests = [(
+                        "a,b,c\nd,e,f\ng,h,i",
+                        vec![
+                            vec!["d", "e", "f"],
+                            vec!["g", "h", "i"],
+                        ],
+                        "Turning on `detect_headers` should prevent first row from being returned as a record",
+                    )];
+                    let mut parser = Parser::new();
+                    parser.separator(',').quote('"').rtrim().detect_header();
+                    run_tests_pass(parser, &tests);
+                });
+            });
+
+            describe!(when_off, {
+                use crate::parser_tests::*;
+                it!(should_treat_first_row_as_record, {
+                    let tests = [(
+                        "a,b,c\nd,e,f\ng,h,i",
+                        vec![
+                            vec!["a", "b", "c"],
+                            vec!["d", "e", "f"],
+                            vec!["g", "h", "i"],
+                        ],
+                        "First row should be treated as a record when 'detect_headers' is off (default)",
+                    )];
+                    let mut parser = Parser::new();
+                    parser.separator(',').quote('"').rtrim();
+                    run_tests_pass(parser, &tests);
+                });
+            });
+        });
+
         describe!(rtrim, {
             describe!(when_on, {
                 use crate::parser_tests::*;
@@ -313,7 +371,7 @@ describe!(parser_tests, {
                         "Turning on `ltrim` should remove all types of whitespace before fields",
                     )];
                     let mut parser = Parser::new();
-                    let parser = parser.separator(',').quote('"').rtrim();
+                    parser.separator(',').quote('"').rtrim();
                     run_tests_pass(parser, &tests);
                 });
             });
@@ -331,7 +389,7 @@ describe!(parser_tests, {
                         "Whitespace before fields should not be removed when `ltrim` is off (default)",
                     )];
                     let mut parser = Parser::new();
-                    let parser = parser.separator(',').quote('"');
+                    parser.separator(',').quote('"');
                     run_tests_pass(parser, &tests);
                 });
             });
@@ -351,7 +409,7 @@ describe!(parser_tests, {
                         "Turning on `ltrim` should remove all types of whitespace before fields",
                     )];
                     let mut parser = Parser::new();
-                    let parser = parser.separator(',').quote('"').ltrim();
+                    parser.separator(',').quote('"').ltrim();
                     run_tests_pass(parser, &tests);
                 });
             });
@@ -369,7 +427,7 @@ describe!(parser_tests, {
                         "Whitespace before fields should not be removed when `ltrim` is off (default)",
                     )];
                     let mut parser = Parser::new();
-                    let parser = parser.separator(',').quote('"');
+                    parser.separator(',').quote('"');
                     run_tests_pass(parser, &tests);
                 });
             });
@@ -400,8 +458,8 @@ describe!(parser_tests, {
                     "Should ignore separators inside quoted fields",
                 ),
                 (
-                    "abc,\"def\n\"\"ghi\"\"\",jkl\nmno",
-                    vec![vec!["abc", "def\n\"ghi\"", "jkl"], vec!["mno"]],
+                    "abc,\"def\n\"\"ghi\"\"\",jkl\nm,n,o",
+                    vec![vec!["abc", "def\n\"ghi\"", "jkl"], vec!["m", "n", "o"]],
                     "Should handle combinations of quoted and unquoted fields",
                 ),
                 (
@@ -416,7 +474,7 @@ describe!(parser_tests, {
                 ),
             ];
             let mut parser = Parser::new();
-            let parser = parser.separator(',').quote('"');
+            parser.separator(',').quote('"');
             run_tests_pass(parser, &tests);
         });
     });
@@ -437,7 +495,7 @@ describe!(parser_tests, {
                     ),
                 ];
                 let mut parser = Parser::new();
-                let parser = parser.separator(',').quote('"');
+                parser.separator(',').quote('"');
                 run_tests_fail(parser, &tests);
             });
 
@@ -457,10 +515,9 @@ describe!(parser_tests, {
                             ),
                         ];
                         let mut parser = Parser::new();
-                        let parser = parser
+                        parser
                             .separator(',')
-                            .quote('"')
-                            .columns(vec![String::from("h1"), String::from("h2")]);
+                            .quote('"');
                         run_tests_fail(parser, &tests);
                     });
                 }
