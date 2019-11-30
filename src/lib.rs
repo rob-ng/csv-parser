@@ -1,43 +1,53 @@
 use std::io::{BufRead, BufReader, Read};
 
+const SEPARATOR: char = ',';
+const QUOTE: char = '"';
+
 type Result<T> = std::result::Result<T, String>;
 
-#[derive(Clone)]
 pub struct Parser<'a> {
-     separator: char,
+    separator: char,
     quote: char,
-    columns: Option<Vec<String>>,
-
-    should_ltrim: bool,
     ignore_before_field: &'a dyn Fn(char) -> bool,
-    should_rtrim: bool,
     ignore_after_field: &'a dyn Fn(char) -> bool,
-    should_detect_header: bool
-    //should_skip_empty_rows: bool,
-    //max_record_size: usize
+    should_detect_columns: bool,
+    columns: Option<Vec<String>>
 }
 
 impl<'a> Parser<'a> {
     pub fn new() -> Self {
         Parser {
-            separator: ',',
-            quote: '"',
-            columns: None,
-             should_ltrim: false,
-             ignore_before_field: &|_| false,
-             should_rtrim: false,
-             ignore_after_field: &|_| false,
-             should_detect_header: false
+            separator: SEPARATOR,
+            quote: QUOTE,
+            ignore_before_field: &|_| false,
+            ignore_after_field: &|_| false,
+            should_detect_columns: false,
+            columns: None
         }
     }
 
     pub fn separator(&mut self, separator: char) -> &mut Self {
-         self.separator = separator;
+        self.separator = separator;
         self
     }
 
-    pub fn quote(&mut self, quote: char) -> &mut Self {
-         self.quote = quote;
+   pub fn quote(&mut self, quote: char) -> &mut Self {
+        self.quote = quote;
+        self
+    }
+
+    pub fn ltrim(&mut self) -> &mut Self {
+       self.ignore_before_field = &|c| c.is_whitespace();
+       self
+    }
+
+    pub fn rtrim(&mut self) -> &mut Self {
+       self.ignore_after_field = &|c| c.is_whitespace();
+       self
+    }
+
+    pub fn detect_columns(&mut self) -> &mut Self {
+        self.should_detect_columns = true;
         self
     }
 
@@ -46,50 +56,54 @@ impl<'a> Parser<'a> {
         self
     }
 
-    pub fn ltrim(&mut self) -> &mut Self {
-        self.should_ltrim = true;
-        self.ignore_before_field = &|c| c.is_whitespace();
-        self
-    }
-
-    pub fn rtrim(&mut self) -> &mut Self {
-        self.should_rtrim = true;
-        self.ignore_after_field = &|c| c.is_whitespace();
-        self
-    }
-
-    pub fn detect_header(&mut self) -> &mut Self {
-        self.should_detect_header = true;
-        self
-    }
-
-    pub fn parse<R>(&self, csv_source: R) -> RecordIterator<'a, R>
+   pub fn parse<R>(&self, csv_source: R) -> ParserIterator<R>
     where
         R: Read,
     {
-        RecordIterator::new(csv_source, self.clone())
+        ParserIterator::new(csv_source, self)
+    }
+}
+
+pub struct ParserIterator<'a, R>
+where
+    R: Read,
+{
+    parser: &'a Parser<'a>,
+    csv: std::iter::Peekable<SourceIterator<R>>,
+    columns: Option<Vec<String>>
+}
+
+impl<'a, R> ParserIterator<'a, R>
+where
+    R: Read,
+{
+    pub fn new(csv_source: R, parser: &'a Parser<'a>) -> Self {
+        let csv_reader = Source::new(csv_source);
+        ParserIterator {
+            parser,
+            csv: csv_reader.into_iter().peekable(),
+            columns: parser.columns.clone()
+        }
     }
 
-    fn record<R>(&mut self, csv: &mut std::iter::Peekable<R>) -> Result<Option<Vec<String>>>
-    where
-        R: Iterator<Item = char>,
+    fn record(&mut self) -> Result<Option<Vec<String>>>
     {
         let mut fields = vec![];
 
         loop {
-            let field = match self.field(csv) {
+            let field = match self.field() {
                 Ok(field) => field,
                 Err(msg) => return Err(format!("Malformed field: {}", msg)),
             };
 
             fields.push(field);
-            match csv.peek() {
-                Some(&c) if c == self.separator => {
-                    csv.next();
+            match self.csv.peek() {
+                Some(&c) if c == self.parser.separator => {
+                    self.csv.next();
                     continue;
                 }
                 Some(&c) if c == '\n' => {
-                    csv.next();
+                    self.csv.next();
                     break;
                 }
                 Some(_) => unreachable!(),
@@ -98,7 +112,7 @@ impl<'a> Parser<'a> {
         }
 
         match self.columns.as_mut() {
-            None if self.should_detect_header => {
+            None if self.parser.should_detect_columns => {
                 self.columns.replace(fields);
                 Ok(None)
             },
@@ -116,34 +130,30 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn field<R>(&self, csv: &mut std::iter::Peekable<R>) -> Result<String>
-    where
-        R: Iterator<Item = char>,
+    fn field(&mut self) -> Result<String>
     {
-        match csv.peek() {
-            Some(&c) if c == self.quote => self.string(csv),
-            _ => self.text(csv),
+        match self.csv.peek() {
+            Some(&c) if c == self.parser.quote => self.string(),
+            _ => self.text(),
         }
     }
 
-    fn string<R>(&self, csv: &mut std::iter::Peekable<R>) -> Result<String>
-    where
-        R: Iterator<Item = char>,
+    fn string(&mut self) -> Result<String>
     {
         // Remove initial quotation mark.
-        csv.next();
+        self.csv.next();
 
         let mut field = String::new();
 
-        while let Some(c) = csv.next() {
-            if c == self.quote {
-                let next = csv.peek();
+        while let Some(c) = self.csv.next() {
+            if c == self.parser.quote {
+                let next = self.csv.peek();
                 match next {
-                    Some(&c) if c == self.quote => {
-                        field.push(self.quote);
-                        csv.next();
+                    Some(&c) if c == self.parser.quote => {
+                        field.push(self.parser.quote);
+                        self.csv.next();
                     }
-                    Some(&c) if c != self.separator && c != '\n' => return Err(String::from(
+                    Some(&c) if c != self.parser.separator && c != '\n' => return Err(String::from(
                         "String fields must be quoted in their entirety",
                     )),     
                     _ => return Ok(field)
@@ -156,31 +166,29 @@ impl<'a> Parser<'a> {
         Err(String::from("String is missing closing quotation"))
     }
 
-    fn text<R>(&self, csv: &mut std::iter::Peekable<R>) -> Result<String>
-    where
-        R: Iterator<Item = char>,
+    fn text(&mut self) -> Result<String>
     {
         let mut field = vec![];
 
         loop {
-            match csv.peek() {
-                Some(&c) if (self.ignore_before_field)(c) => csv.next(),
+            match self.csv.peek() {
+                Some(&c) if (self.parser.ignore_before_field)(c) => self.csv.next(),
                 _ => break
             };
         }
 
         loop {
-            match csv.peek() {
-                Some(&c) if c == self.quote => return Err(format!("Unquoted fields cannot contain quote character: `{}`", self.quote)),
-                Some(&c) if c != self.separator && c != '\n' => field.push(c),
+            match self.csv.peek() {
+                Some(&c) if c == self.parser.quote => return Err(format!("Unquoted fields cannot contain quote character: `{}`", self.parser.quote)),
+                Some(&c) if c != self.parser.separator && c != '\n' => field.push(c),
                 _ => break
             }
-            csv.next();
+            self.csv.next();
         }
 
         loop {
             match field.last() {
-                Some(&c) if (self.ignore_after_field)(c) => field.pop(),
+                Some(&c) if (self.parser.ignore_after_field)(c) => field.pop(),
                 _ => break
             };
         }
@@ -188,32 +196,11 @@ impl<'a> Parser<'a> {
         let field: String = field.iter().collect();
         Ok(field)
     }
-}
-
-pub struct RecordIterator<'a, R>
-where
-    R: Read,
-{
-    parser: Parser<'a>,
-    csv: std::iter::Peekable<SourceIterator<R>>,
-}
-
-impl<'a, R> RecordIterator<'a, R>
-where
-    R: Read,
-{
-    pub fn new(csv_source: R, parser: Parser<'a>) -> Self {
-        let csv_reader = Source::new(csv_source);
-        RecordIterator {
-            parser,
-            csv: csv_reader.into_iter().peekable(),
-        }
-    }
 } 
 
 type Record = Vec<String>;
 
-impl<'a, R> Iterator for RecordIterator<'a, R>
+impl<'a, R> Iterator for ParserIterator<'a, R>
 where
     R: Read,
 {
@@ -222,7 +209,7 @@ where
         if self.csv.peek().is_none() {
             None
         } else {
-            match self.parser.record(&mut self.csv) {
+            match self.record() {
                 Ok(Some(record)) => Some(Ok(record)),
                 Ok(None) => self.next(),
                 Err(msg) => Some(Err(msg))
@@ -320,7 +307,7 @@ describe!(parser_tests, {
     }
 
     describe!(configuration, {
-        describe!(detect_header, {
+        describe!(detect_columns, {
             describe!(when_on, {
                 use crate::parser_tests::*;
                 it!(should_treat_first_row_in_csv_as_header_instead_of_record, {
@@ -330,11 +317,29 @@ describe!(parser_tests, {
                             vec!["d", "e", "f"],
                             vec!["g", "h", "i"],
                         ],
-                        "Turning on `detect_headers` should prevent first row from being returned as a record",
+                        "Turning on `detect_columns` should prevent first row from being returned as a record",
                     )];
                     let mut parser = Parser::new();
-                    parser.separator(',').quote('"').rtrim().detect_header();
+                    parser.separator(',').quote('"').detect_columns();
                     run_tests_pass(parser, &tests);
+                });
+
+                describe!(and_explicit_columns_have_also_been_given, {
+                    use crate::parser_tests::*;
+                    it!(should_treat_first_row_as_record, {
+                        let tests = [(
+                            "a,b,c\nd,e,f\ng,h,i",
+                            vec![
+                                vec!["a", "b", "c"],
+                                vec!["d", "e", "f"],
+                                vec!["g", "h", "i"],
+                            ],
+                            "First row should be treated as a record when 'detect_columns' is off (default)",
+                        )];
+                        let mut parser = Parser::new();
+                        parser.separator(',').quote('"').rtrim().detect_columns().columns(vec![String::from("a"), String::from("b"), String::from("c")]);
+                        run_tests_pass(parser, &tests);
+                    });
                 });
             });
 
@@ -348,10 +353,10 @@ describe!(parser_tests, {
                             vec!["d", "e", "f"],
                             vec!["g", "h", "i"],
                         ],
-                        "First row should be treated as a record when 'detect_headers' is off (default)",
+                        "First row should be treated as a record when 'detect_columns' is off (default)",
                     )];
                     let mut parser = Parser::new();
-                    parser.separator(',').quote('"').rtrim();
+                    parser.separator(',').quote('"');
                     run_tests_pass(parser, &tests);
                 });
             });
