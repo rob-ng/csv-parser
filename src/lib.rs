@@ -10,13 +10,31 @@ type Record = Vec<Field>;
 type RecordResult = Result<Option<Record>>;
 
 pub struct Parser {
-    separator: char,
+    // Special characters
     quote: char,
+    separator: char,
+    // Behavior
+    should_detect_columns: bool,
+    columns: Option<Record>,
     should_ltrim_fields: bool,
     should_rtrim_fields: bool,
-    should_detect_columns: bool,
-    columns: Option<Vec<String>>,
     should_skip_empty_rows: bool
+}
+
+macro_rules! config {
+    ($name:ident, $field:ident) => {
+        pub fn $name(&mut self, value: bool) -> &mut Self {
+            self.$field = value;
+            self
+        }
+    };
+
+    ($name:ident, $field:ident, $value_type:ty) => {
+        pub fn $name(&mut self, value: $value_type) -> &mut Self {
+            self.$field = value;
+            self
+        }
+    };
 }
 
 impl<'a> Parser {
@@ -32,40 +50,22 @@ impl<'a> Parser {
         }
     }
 
-    pub fn separator(&mut self, separator: char) -> &mut Self {
-        self.separator = separator;
-        self
-    }
+    config!(separator, separator, char);
 
-   pub fn quote(&mut self, quote: char) -> &mut Self {
-        self.quote = quote;
-        self
-    }
+    config!(quote, quote, char);
 
-    pub fn ltrim(&mut self) -> &mut Self {
-       self.should_ltrim_fields = true;
-       self
-    }
+    config!(ltrim, should_ltrim_fields);
 
-    pub fn rtrim(&mut self) -> &mut Self {
-       self.should_rtrim_fields = true;
-       self
-    }
+    config!(rtrim, should_rtrim_fields);
 
-    pub fn detect_columns(&mut self) -> &mut Self {
-        self.should_detect_columns = true;
-        self
-    }
+    config!(detect_columns, should_detect_columns);
 
     pub fn columns(&mut self, columns: Vec<String>) -> &mut Self {
         self.columns.replace(columns);
         self
     }
 
-    pub fn skip_empty_rows(&mut self) -> &mut Self {
-        self.should_skip_empty_rows = true;
-        self
-    }
+    config!(skip_empty_rows, should_skip_empty_rows);
 
     pub fn parse<R>(&self, csv_source: R) -> ParserIterator<R>
     where
@@ -397,7 +397,7 @@ describe!(parser_tests, {
                         "Turning on `skip_empty_rows` should skip empty rows in CSV file.",
                     )];
                     let mut parser = Parser::new();
-                    parser.separator(',').quote('"').skip_empty_rows();
+                    parser.separator(',').quote('"').skip_empty_rows(true);
                     run_tests_pass(parser, &tests);
                 });
             });
@@ -412,10 +412,10 @@ describe!(parser_tests, {
                             vec!["  "],
                             vec!["\t"],
                         ],
-                        "Empty rows should not be skipped when `skip_empty_rows` is off (default)",
+                        "Turning *off* `skip_empty_rows` should cause empty rows *not* to be skipped",
                     )];
                     let mut parser = Parser::new();
-                    parser.separator(',').quote('"');
+                    parser.separator(',').quote('"').skip_empty_rows(false);
                     run_tests_pass(parser, &tests);
                 });
             });
@@ -435,7 +435,7 @@ describe!(parser_tests, {
                         "Turning on `detect_columns` should prevent first row from being returned as a record",
                     )];
                     let mut parser = Parser::new();
-                    parser.separator(',').quote('"').detect_columns();
+                    parser.separator(',').quote('"').detect_columns(true);
                     run_tests_pass(parser, &tests);
                 });
 
@@ -449,10 +449,10 @@ describe!(parser_tests, {
                                 vec!["d", "e", "f"],
                                 vec!["g", "h", "i"],
                             ],
-                            "First row should be treated as a record when 'detect_columns' is off (default)",
+                            "Proving columns via `columns` should override `detect_columns` and cause the first row to be treated as a record",
                         )];
                         let mut parser = Parser::new();
-                        parser.separator(',').quote('"').rtrim().detect_columns().columns(vec![String::from("a"), String::from("b"), String::from("c")]);
+                        parser.separator(',').quote('"').detect_columns(true).columns(vec![String::from("a"), String::from("b"), String::from("c")]);
                         run_tests_pass(parser, &tests);
                     });
                 });
@@ -468,10 +468,10 @@ describe!(parser_tests, {
                             vec!["d", "e", "f"],
                             vec!["g", "h", "i"],
                         ],
-                        "First row should be treated as a record when 'detect_columns' is off (default)",
+                        "Turning off `detect_columns` should cause the first row to be treated as a record",
                     )];
                     let mut parser = Parser::new();
-                    parser.separator(',').quote('"');
+                    parser.separator(',').quote('"').detect_columns(false);
                     run_tests_pass(parser, &tests);
                 });
             });
@@ -488,10 +488,10 @@ describe!(parser_tests, {
                             vec!["d", "e", "f"],
                             vec!["g", "h", "i"],
                         ],
-                        "Turning on `ltrim` should remove all types of whitespace before fields",
+                        "Turning on `rtrim` should remove all types of whitespace after fields",
                     )];
                     let mut parser = Parser::new();
-                    parser.separator(',').quote('"').rtrim();
+                    parser.separator(',').quote('"').rtrim(true);
                     run_tests_pass(parser, &tests);
                 });
             });
@@ -506,10 +506,10 @@ describe!(parser_tests, {
                             vec!["d ", "e   ", "f"],
                             vec!["g \t\t", "h", "i \u{A0}\u{3000}\t"],
                         ],
-                        "Whitespace before fields should not be removed when `ltrim` is off (default)",
+                        "Turning *off* `rtrim` should *not* remove whitespace after fields",
                     )];
                     let mut parser = Parser::new();
-                    parser.separator(',').quote('"');
+                    parser.separator(',').quote('"').rtrim(false);
                     run_tests_pass(parser, &tests);
                 });
             });
@@ -526,10 +526,10 @@ describe!(parser_tests, {
                             vec!["d", "e", "f"],
                             vec!["g", "h", "i"],
                         ],
-                        "Turning on `ltrim` should remove all types of whitespace before fields",
+                        "Turning on `ltrim` should remove all whitespace before fields",
                     )];
                     let mut parser = Parser::new();
-                    parser.separator(',').quote('"').ltrim();
+                    parser.separator(',').quote('"').ltrim(true);
                     run_tests_pass(parser, &tests);
                 });
             });
@@ -544,10 +544,10 @@ describe!(parser_tests, {
                             vec![" d", "   e", "f"],
                             vec![" \t\tg", "h", " \u{A0}\u{3000}\ti"],
                         ],
-                        "Whitespace before fields should not be removed when `ltrim` is off (default)",
+                        "Turning *off* `ltrim` should *not* remove whitespace before fields",
                     )];
                     let mut parser = Parser::new();
-                    parser.separator(',').quote('"');
+                    parser.separator(',').quote('"').ltrim(false);
                     run_tests_pass(parser, &tests);
                 });
             });

@@ -7,7 +7,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
         b.iter(|| {
             let csv = File::open("./large.csv").unwrap();
             let mut parser = Parser::new();
-            parser.ltrim();
+            parser.ltrim(true);
             for _record in parser.parse(csv) {}
         })
     });
