@@ -4,25 +4,29 @@ const SEPARATOR: char = ',';
 const QUOTE: char = '"';
 
 type Result<T> = std::result::Result<T, String>;
+type Field = String;
+type FieldResult = Result<Field>;
+type Record = Vec<Field>;
+type RecordResult = Result<Option<Record>>;
 
-pub struct Parser<'a> {
+pub struct Parser {
     separator: char,
     quote: char,
-    ignore_before_field: &'a dyn Fn(char) -> bool,
-    ignore_after_field: &'a dyn Fn(char) -> bool,
+    should_ltrim_fields: bool,
+    should_rtrim_fields: bool,
     should_detect_columns: bool,
-    columns: Option<Vec<String>>
+    columns: Option<Vec<String>>,
 }
 
-impl<'a> Parser<'a> {
+impl<'a> Parser {
     pub fn new() -> Self {
         Parser {
             separator: SEPARATOR,
             quote: QUOTE,
-            ignore_before_field: &|_| false,
-            ignore_after_field: &|_| false,
+            should_ltrim_fields: false,
+            should_rtrim_fields: false,
             should_detect_columns: false,
-            columns: None
+            columns: None,
         }
     }
 
@@ -37,12 +41,12 @@ impl<'a> Parser<'a> {
     }
 
     pub fn ltrim(&mut self) -> &mut Self {
-       self.ignore_before_field = &|c| c.is_whitespace();
+       self.should_ltrim_fields = true;
        self
     }
 
     pub fn rtrim(&mut self) -> &mut Self {
-       self.ignore_after_field = &|c| c.is_whitespace();
+       self.should_rtrim_fields = true;
        self
     }
 
@@ -64,25 +68,45 @@ impl<'a> Parser<'a> {
     }
 }
 
+type TextStrategy<'a, R> = dyn Fn(&mut ParserIterator<'a, R>) -> FieldResult;
+type OnRecordStrategy<'a, R> = dyn Fn(&mut ParserIterator<'a, R>, Vec<Field>) -> RecordResult;
+
 pub struct ParserIterator<'a, R>
 where
     R: Read,
 {
-    parser: &'a Parser<'a>,
+    parser: &'a Parser,
     csv: std::iter::Peekable<SourceIterator<R>>,
-    columns: Option<Vec<String>>
+    columns: Option<Vec<String>>,
+
+    text_strat: &'a TextStrategy<'a, R>,
+    on_record_strat: &'a OnRecordStrategy<'a, R>
 }
 
 impl<'a, R> ParserIterator<'a, R>
 where
     R: Read,
 {
-    pub fn new(csv_source: R, parser: &'a Parser<'a>) -> Self {
+    pub fn new(csv_source: R, parser: &'a Parser) -> Self {
         let csv_reader = Source::new(csv_source);
+        let text_strat: &'a TextStrategy<'a, R> = if parser.should_ltrim_fields {
+            &|s: &mut ParserIterator<'a, R>| ParserIterator::text_ltrim(s)
+        } else if parser.should_rtrim_fields {
+            &|s: &mut ParserIterator<'a, R>| ParserIterator::text_rtrim(s)
+        } else {
+            &|s: &mut ParserIterator<'a, R>| ParserIterator::text(s)
+        };
+        let on_record_strat: &'a OnRecordStrategy<'a, R> = if parser.should_detect_columns {
+            &|s: &mut ParserIterator<'a, R>, fields: Vec<Field>| ParserIterator::on_record_detect_columns(s, fields)
+        } else {
+            &|s: &mut ParserIterator<'a, R>, fields: Vec<Field>| ParserIterator::on_record_default(s, fields)
+        };
         ParserIterator {
             parser,
             csv: csv_reader.into_iter().peekable(),
-            columns: parser.columns.clone()
+            columns: parser.columns.clone(),
+            text_strat,
+            on_record_strat
         }
     }
 
@@ -97,6 +121,7 @@ where
             };
 
             fields.push(field);
+
             match self.csv.peek() {
                 Some(&c) if c == self.parser.separator => {
                     self.csv.next();
@@ -111,30 +136,14 @@ where
             }
         }
 
-        match self.columns.as_mut() {
-            None if self.parser.should_detect_columns => {
-                self.columns.replace(fields);
-                Ok(None)
-            },
-            None => {
-                let standin_columns = vec![String::from(""); fields.len()];
-                self.columns.replace(standin_columns);
-                Ok(Some(fields))
-            },
-            Some(columns) if columns.len() == fields.len() => Ok(Some(fields)),
-            Some(columns) => Err(format!(
-                "Number of fields {} does not match number of columns {}",
-                fields.len(),
-                columns.len()
-            )),
-        }
+        (self.on_record_strat)(self, fields)
     }
 
     fn field(&mut self) -> Result<String>
     {
         match self.csv.peek() {
             Some(&c) if c == self.parser.quote => self.string(),
-            _ => self.text(),
+            _ => (self.text_strat)(self),
         }
     }
 
@@ -165,17 +174,55 @@ where
 
         Err(String::from("String is missing closing quotation"))
     }
+}
 
-    fn text(&mut self) -> Result<String>
+impl<'a, R> ParserIterator<'a, R>
+where
+    R: Read,
+{
+    fn on_record_default(&mut self, fields: Vec<Field>) -> RecordResult {
+        match self.columns.as_mut() {
+            Some(columns) if columns.len() == fields.len() => Ok(Some(fields)),
+            Some(columns) => Err(format!(
+                "Number of fields {} does not match number of columns {}",
+                fields.len(),
+                columns.len()
+            )),
+            None => {
+                let standin_columns = vec![String::from(""); fields.len()];
+                self.columns.replace(standin_columns);
+                Ok(Some(fields))
+            }
+        }
+    }
+
+    fn on_record_detect_columns(&mut self, fields: Vec<Field>) -> RecordResult {
+        match self.columns.as_mut() {
+            Some(columns) if columns.len() == fields.len() => Ok(Some(fields)),
+            Some(columns) => Err(format!(
+                "Number of fields {} does not match number of columns {}",
+                fields.len(),
+                columns.len()
+            )),
+            None => {
+                self.columns.replace(fields);
+                Ok(None)
+            }
+        }
+    }
+}
+
+impl<'a, R> ParserIterator<'a, R>
+where
+    R: Read,
+{
+    fn text(&mut self) -> Result<String> {
+        self.text_base().map(|field_chars| field_chars.iter().collect())
+    }
+
+    fn text_base(&mut self) -> Result<Vec<char>>
     {
         let mut field = vec![];
-
-        loop {
-            match self.csv.peek() {
-                Some(&c) if (self.parser.ignore_before_field)(c) => self.csv.next(),
-                _ => break
-            };
-        }
 
         loop {
             match self.csv.peek() {
@@ -186,19 +233,31 @@ where
             self.csv.next();
         }
 
+        Ok(field)
+    }
+
+    fn text_ltrim(&mut self) -> Result<String> {
         loop {
-            match field.last() {
-                Some(&c) if (self.parser.ignore_after_field)(c) => field.pop(),
+            match self.csv.peek() {
+                Some(&c) if self.parser.should_ltrim_fields && c.is_whitespace() => self.csv.next(),
                 _ => break
             };
         }
+        self.text_base().map(|field_chars| field_chars.iter().collect())
+    }
 
-        let field: String = field.iter().collect();
-        Ok(field)
+    fn text_rtrim(&mut self) -> Result<String> {
+        self.text_base().map(|mut field_chars| {
+            loop {
+                match field_chars.last() {
+                    Some(&c) if self.parser.should_rtrim_fields && c.is_whitespace() => field_chars.pop(),
+                    _ => break
+                };
+            }
+            field_chars.iter().collect()
+        })
     }
 } 
-
-type Record = Vec<String>;
 
 impl<'a, R> Iterator for ParserIterator<'a, R>
 where
@@ -219,6 +278,12 @@ where
 }
 
 // Private
+// SHOULD BE ABLE TO CONFIGURE THIS AS WELL:
+// Example Configuration:
+// 1. Skip empty lines
+// 2. Row delimiter (with read_until)
+// 3. From line
+// 4. To line
 struct Source<R>(BufReader<R>);
 
 impl<R> Source<R>
@@ -245,6 +310,7 @@ where
 struct SourceIterator<R> {
     source: Source<R>,
     curr_line: Vec<char>,
+    should_skip_empty_rows: bool
 }
 
 impl<R> SourceIterator<R>
@@ -255,8 +321,11 @@ where
         SourceIterator {
             source,
             curr_line: vec![],
+            should_skip_empty_rows: false
         }
     }
+
+
 }
 
 impl<R> Iterator for SourceIterator<R>
@@ -284,7 +353,7 @@ describe!(parser_tests, {
     pub fn run_tests_pass(parser: Parser, tests: &[(&str, Vec<Vec<&str>>, &str)]) {
         verify_all!(tests.iter().map(|(given, expected, reason)| {
             let found: Result<Vec<Vec<String>>> = parser.parse(given.as_bytes()).collect();
-            let reason = format!("{}. Given: {}", reason, given);
+            let reason = format!("{}.\nGiven:\n{}", reason, given);
             match &found {
                 Ok(found) => {
                     let expected: Vec<Vec<String>> = expected
@@ -301,7 +370,7 @@ describe!(parser_tests, {
     pub fn run_tests_fail(parser: Parser, tests: &[(&str, &str)]) {
         verify_all!(tests.iter().map(|(given, reason)| {
             let found: Result<Vec<Vec<String>>> = parser.parse(given.as_bytes()).collect();
-            let reason = format!("{}. Given: {}", reason, given);
+            let reason = format!("{}.\nGiven:\n{}", reason, given);
             that!(found).will_be_err().because(&reason)
         }));
     }
