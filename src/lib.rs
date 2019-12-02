@@ -16,6 +16,7 @@ pub struct Parser {
     should_rtrim_fields: bool,
     should_detect_columns: bool,
     columns: Option<Vec<String>>,
+    should_skip_empty_rows: bool
 }
 
 impl<'a> Parser {
@@ -27,6 +28,7 @@ impl<'a> Parser {
             should_rtrim_fields: false,
             should_detect_columns: false,
             columns: None,
+            should_skip_empty_rows: false
         }
     }
 
@@ -60,10 +62,16 @@ impl<'a> Parser {
         self
     }
 
-   pub fn parse<R>(&self, csv_source: R) -> ParserIterator<R>
+    pub fn skip_empty_rows(&mut self) -> &mut Self {
+        self.should_skip_empty_rows = true;
+        self
+    }
+
+    pub fn parse<R>(&self, csv_source: R) -> ParserIterator<R>
     where
         R: Read,
     {
+        let csv_source = SourceIterator::new(csv_source, self.should_skip_empty_rows);
         ParserIterator::new(csv_source, self)
     }
 }
@@ -76,7 +84,7 @@ where
     R: Read,
 {
     parser: &'a Parser,
-    csv: std::iter::Peekable<SourceIterator<R>>,
+    csv: std::iter::Peekable<SourceIterator<'a, R>>,
     columns: Option<Vec<String>>,
 
     text_strat: &'a TextStrategy<'a, R>,
@@ -87,30 +95,29 @@ impl<'a, R> ParserIterator<'a, R>
 where
     R: Read,
 {
-    pub fn new(csv_source: R, parser: &'a Parser) -> Self {
-        let csv_reader = Source::new(csv_source);
+    fn new(csv_source: SourceIterator<'a, R>, parser: &'a Parser) -> Self {
         let text_strat: &'a TextStrategy<'a, R> = if parser.should_ltrim_fields {
-            &|s: &mut ParserIterator<'a, R>| ParserIterator::text_ltrim(s)
+            &|s: &mut Self| ParserIterator::text_ltrim(s)
         } else if parser.should_rtrim_fields {
-            &|s: &mut ParserIterator<'a, R>| ParserIterator::text_rtrim(s)
+            &|s: &mut Self| ParserIterator::text_rtrim(s)
         } else {
-            &|s: &mut ParserIterator<'a, R>| ParserIterator::text(s)
+            &|s: &mut Self| ParserIterator::text(s)
         };
         let on_record_strat: &'a OnRecordStrategy<'a, R> = if parser.should_detect_columns {
-            &|s: &mut ParserIterator<'a, R>, fields: Vec<Field>| ParserIterator::on_record_detect_columns(s, fields)
+            &|s: &mut Self, fields: Vec<Field>| ParserIterator::on_record_detect_columns(s, fields)
         } else {
-            &|s: &mut ParserIterator<'a, R>, fields: Vec<Field>| ParserIterator::on_record_default(s, fields)
+            &|s: &mut Self, fields: Vec<Field>| ParserIterator::on_record_default(s, fields)
         };
         ParserIterator {
             parser,
-            csv: csv_reader.into_iter().peekable(),
+            csv: csv_source.peekable(),
             columns: parser.columns.clone(),
             text_strat,
             on_record_strat
         }
     }
 
-    fn record(&mut self) -> Result<Option<Vec<String>>>
+    fn record(&mut self) -> RecordResult
     {
         let mut fields = vec![];
 
@@ -139,7 +146,7 @@ where
         (self.on_record_strat)(self, fields)
     }
 
-    fn field(&mut self) -> Result<String>
+    fn field(&mut self) -> FieldResult
     {
         match self.csv.peek() {
             Some(&c) if c == self.parser.quote => self.string(),
@@ -147,7 +154,7 @@ where
         }
     }
 
-    fn string(&mut self) -> Result<String>
+    fn string(&mut self) -> FieldResult
     {
         // Remove initial quotation mark.
         self.csv.next();
@@ -265,10 +272,9 @@ where
 {
     type Item = Result<Record>;
     fn next(&mut self) -> Option<Self::Item> {
-        if self.csv.peek().is_none() {
-            None
-        } else {
-            match self.record() {
+        match self.csv.peek() {
+            None => None,
+            Some(_) => match self.record() {
                 Ok(Some(record)) => Some(Ok(record)),
                 Ok(None) => self.next(),
                 Err(msg) => Some(Err(msg))
@@ -284,62 +290,63 @@ where
 // 2. Row delimiter (with read_until)
 // 3. From line
 // 4. To line
-struct Source<R>(BufReader<R>);
-
-impl<R> Source<R>
-where
-    R: Read,
-{
-    pub fn new(source: R) -> Self {
-        Source(BufReader::new(source))
-    }
-}
-
-impl<R> IntoIterator for Source<R>
-where
-    R: Read,
-{
-    type Item = char;
-    type IntoIter = SourceIterator<R>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        SourceIterator::new(self)
-    }
-}
-
-struct SourceIterator<R> {
-    source: Source<R>,
+struct SourceIterator<'a, R> {
+    source: BufReader<R>,
     curr_line: Vec<char>,
-    should_skip_empty_rows: bool
+    next_strat: &'a NextStrategy<Self, char>
 }
 
-impl<R> SourceIterator<R>
+type NextStrategy<Slf, Item> = dyn Fn(&mut Slf) -> Option<Item>;
+
+impl<'a, R> SourceIterator<'a, R>
 where
     R: Read,
 {
-    pub fn new(source: Source<R>) -> Self {
+    pub fn new(source: R, should_skip_empty_rows: bool) -> Self {
+        let next_strat: &NextStrategy<Self, char> = if should_skip_empty_rows {
+            &|slf: &mut Self| SourceIterator::next_skip_empty_lines(slf)
+        } else {
+            &|slf: &mut Self| SourceIterator::next_default(slf)
+        };
         SourceIterator {
-            source,
+            source: BufReader::new(source),
             curr_line: vec![],
-            should_skip_empty_rows: false
+            next_strat
         }
     }
 
+    fn next_default(&mut self) -> Option<char> {
+        if self.curr_line.len() == 0 {
+            let mut curr_line = String::new();
+            self.source.read_line(&mut curr_line);
+            self.curr_line = curr_line.chars().rev().collect();
+        }
+        self.curr_line.pop()
+    }
 
+    fn next_skip_empty_lines(&mut self) -> Option<char> {
+        if self.curr_line.len() == 0 {
+            let mut curr_line = String::new();
+            while curr_line.trim().is_empty() {
+                curr_line.clear();
+                match self.source.read_line(&mut curr_line) {
+                    Ok(read) if read == 0 => break,
+                    _ => continue
+                }
+            }
+            self.curr_line = curr_line.chars().rev().collect();
+        }
+        self.curr_line.pop()
+    }
 }
 
-impl<R> Iterator for SourceIterator<R>
+impl<'a, R> Iterator for SourceIterator<'a, R>
 where
     R: Read,
 {
     type Item = char;
     fn next(&mut self) -> Option<Self::Item> {
-        if self.curr_line.len() == 0 {
-            let mut curr_line = String::new();
-            self.source.0.read_line(&mut curr_line);
-            self.curr_line = curr_line.chars().rev().collect();
-        }
-        self.curr_line.pop()
+        (self.next_strat)(self)
     }
 }
 
@@ -376,6 +383,45 @@ describe!(parser_tests, {
     }
 
     describe!(configuration, {
+        describe!(skip_empty_rows, {
+            describe!(when_on, {
+                use crate::parser_tests::*;
+                it!(should_ignore_empty_rows, {
+                    let tests = [(
+                        "\n\n\na,b,c\n\n\nd,e,f\n\n\ng,h,i\n\n\n\n",
+                        vec![
+                            vec!["a", "b", "c"],
+                            vec!["d", "e", "f"],
+                            vec!["g", "h", "i"],
+                        ],
+                        "Turning on `skip_empty_rows` should skip empty rows in CSV file.",
+                    )];
+                    let mut parser = Parser::new();
+                    parser.separator(',').quote('"').skip_empty_rows();
+                    run_tests_pass(parser, &tests);
+                });
+            });
+
+            describe!(when_off, {
+                use crate::parser_tests::*;
+                it!(should_not_ignore_empty_rows, {
+                    let tests = [(
+                        "\n  \n\t\n",
+                        vec![
+                            vec![""],
+                            vec!["  "],
+                            vec!["\t"],
+                        ],
+                        "Empty rows should not be skipped when `skip_empty_rows` is off (default)",
+                    )];
+                    let mut parser = Parser::new();
+                    parser.separator(',').quote('"');
+                    run_tests_pass(parser, &tests);
+                });
+            });
+        });
+
+
         describe!(detect_columns, {
             describe!(when_on, {
                 use crate::parser_tests::*;
