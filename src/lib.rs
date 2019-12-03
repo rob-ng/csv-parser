@@ -18,7 +18,8 @@ pub struct Parser {
     columns: Option<Record>,
     should_ltrim_fields: bool,
     should_rtrim_fields: bool,
-    should_skip_empty_rows: bool
+    should_skip_empty_rows: bool,
+    should_skip_lines_with_error: bool
 }
 
 macro_rules! config {
@@ -46,7 +47,8 @@ impl<'a> Parser {
             should_rtrim_fields: false,
             should_detect_columns: false,
             columns: None,
-            should_skip_empty_rows: false
+            should_skip_empty_rows: false,
+            should_skip_lines_with_error: false
         }
     }
 
@@ -67,6 +69,8 @@ impl<'a> Parser {
 
     config!(skip_empty_rows, should_skip_empty_rows);
 
+    config!(skip_lines_with_error, should_skip_lines_with_error);
+
     pub fn parse<R>(&self, csv_source: R) -> ParserIterator<R>
     where
         R: Read,
@@ -77,7 +81,7 @@ impl<'a> Parser {
 }
 
 type TextParseStrategy<'a, R> = dyn Fn(&mut ParserIterator<'a, R>) -> FieldResult;
-type RecordColumnStrategy<'a, R> = dyn Fn(&mut ParserIterator<'a, R>, Vec<Field>) -> RecordResult;
+type RecordParseStrategy<'a, R> = dyn Fn(&mut ParserIterator<'a, R>, Vec<Field>) -> RecordResult;
 
 pub struct ParserIterator<'a, R>
 where
@@ -87,7 +91,7 @@ where
     columns: Option<Vec<String>>,
     parser: &'a Parser,
     text_parse_strategy: &'a TextParseStrategy<'a, R>,
-    record_column_strategy: &'a RecordColumnStrategy<'a, R>
+    record_parse_strategy: &'a RecordParseStrategy<'a, R>,
 }
 
 impl<'a, R> ParserIterator<'a, R>
@@ -102,7 +106,7 @@ where
             (false, false) => &|s: &mut Self| ParserIterator::text_default(s)
         };
 
-        let record_column_strategy: &'a RecordColumnStrategy<'a, R> = match parser.should_detect_columns {
+        let record_parse_strategy: &'a RecordParseStrategy<'a, R> = match parser.should_detect_columns {
             true => &|s: &mut Self, fields: Vec<Field>| ParserIterator::record_column_detect(s, fields),
             false => &|s: &mut Self, fields: Vec<Field>| ParserIterator::record_column_default(s, fields)
         };
@@ -112,7 +116,7 @@ where
             csv: csv_source.peekable(),
             columns: parser.columns.clone(),
             text_parse_strategy,
-            record_column_strategy
+            record_parse_strategy
         }
     }
 
@@ -142,7 +146,7 @@ where
             }
         }
 
-        (self.record_column_strategy)(self, fields)
+        (self.record_parse_strategy)(self, fields)
     }
 
     fn field(&mut self) -> FieldResult
@@ -301,7 +305,7 @@ where
 // 3. From line
 // 4. To line
 struct SourceIterator<'a, R> {
-    source: BufReader<R>,
+    source: std::io::Lines<BufReader<R>>,
     curr_line: Vec<char>,
     next_strat: &'a NextStrategy<Self, char>
 }
@@ -319,7 +323,7 @@ where
             &|slf: &mut Self| SourceIterator::next_default(slf)
         };
         SourceIterator {
-            source: BufReader::new(source),
+            source: BufReader::new(source).lines(),
             curr_line: vec![],
             next_strat
         }
@@ -327,8 +331,11 @@ where
 
     fn next_default(&mut self) -> Option<char> {
         if self.curr_line.len() == 0 {
-            let mut curr_line = String::new();
-            self.source.read_line(&mut curr_line);
+            let mut curr_line = match self.source.next() {
+                Some(line) => line.expect("Should have read line"),
+                None => return None
+            };
+            curr_line.push('\n');
             self.curr_line = curr_line.chars().rev().collect();
         }
         self.curr_line.pop()
@@ -338,12 +345,12 @@ where
         if self.curr_line.len() == 0 {
             let mut curr_line = String::new();
             while curr_line.trim().is_empty() {
-                curr_line.clear();
-                match self.source.read_line(&mut curr_line) {
-                    Ok(read) if read == 0 => break,
-                    _ => continue
-                }
+                curr_line = match self.source.next() {
+                    Some(line) => line.expect("Should have read line"),
+                    None => return None
+                };
             }
+            curr_line.push('\n');
             self.curr_line = curr_line.chars().rev().collect();
         }
         self.curr_line.pop()
@@ -602,6 +609,15 @@ describe!(parser_tests, {
                     vec![vec!["", "", "", ""], vec!["a", "b", "c", "d"]],
                     "Should allow empty fields",
                 ),
+                (
+                    "a,b,c\r\nd,e,f\r\ng,h,i\r\n",
+                    vec![
+                        vec!["a", "b", "c"],
+                        vec!["d", "e", "f"],
+                        vec!["g", "h", "i"],
+                    ],
+                    "Should work when newline is '\\r\\n'",
+                )
             ];
             let mut parser = Parser::new();
             parser.separator(',').quote('"');
