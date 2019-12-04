@@ -7,11 +7,19 @@ pub fn criterion_benchmark(c: &mut Criterion) {
         b.iter(|| {
             let csv = File::open("./large.csv").unwrap();
             let mut parser = Parser::new();
-            parser.ltrim(true).rtrim(true).detect_columns(true).skip_empty_rows(true);
+            parser
+                .ltrim(true)
+                .rtrim(true)
+                .detect_columns(true)
+                .skip_empty_rows(true);
             for _record in parser.parse(csv) {}
         })
     });
 }
 
-criterion_group!(benches, criterion_benchmark);
+criterion_group! {
+    name = benches;
+    config = Criterion::default();
+    targets = criterion_benchmark
+}
 criterion_main!(benches);
