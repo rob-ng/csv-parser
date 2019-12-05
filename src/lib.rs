@@ -61,6 +61,12 @@ impl Parser {
 
     config!(rtrim, should_rtrim_fields);
 
+    pub fn trim(&mut self, should_trim: bool) -> &mut Self {
+        self.should_ltrim_fields = should_trim;
+        self.should_rtrim_fields = should_trim;
+        self
+    }
+
     config!(detect_columns, should_detect_columns);
 
     pub fn columns(&mut self, columns: Vec<String>) -> &mut Self {
@@ -717,6 +723,44 @@ describe!(parser_tests, {
                     )];
                     let mut parser = Parser::new();
                     parser.separator(',').quote('"').ltrim(false);
+                    run_tests_pass(parser, &tests);
+                });
+            });
+        });
+
+        describe!(trim, {
+            describe!(when_on, {
+                use crate::parser_tests::*;
+                it!(should_ignore_whitespace_to_left_and_right_of_fields, {
+                    let tests = [(
+                        "   a   ,  \u{A0}b  \u{A0},   \u{3000}c   \u{3000}\n d ,   e   ,f\n \t\tg \t\t,h, \u{A0}\u{3000}\ti\u{A0}\u{3000}\t",
+                        vec![
+                            vec!["a", "b", "c"],
+                            vec!["d", "e", "f"],
+                            vec!["g", "h", "i"],
+                        ],
+                        "Turning on `trim` should remove all whitespace before and after fields",
+                    )];
+                    let mut parser = Parser::new();
+                    parser.separator(',').quote('"').trim(true);
+                    run_tests_pass(parser, &tests);
+                });
+            });
+
+            describe!(when_off, {
+                use crate::parser_tests::*;
+                it!(should_keep_whitespace_to_left_and_right_of_fields, {
+                    let tests = [(
+                        "   a   ,  \u{A0}b  \u{A0},   \u{3000}c   \u{3000}\n d ,   e   ,f\n \t\tg \t\t,h, \u{A0}\u{3000}\ti \u{A0}\u{3000}\t",
+                        vec![
+                            vec!["   a   ", "  \u{A0}b  \u{A0}", "   \u{3000}c   \u{3000}"],
+                            vec![" d ", "   e   ", "f"],
+                            vec![" \t\tg \t\t", "h", " \u{A0}\u{3000}\ti \u{A0}\u{3000}\t"],
+                        ],
+                        "Turning *off* `trim` should *not* remove whitespace before and after fields",
+                    )];
+                    let mut parser = Parser::new();
+                    parser.separator(',').quote('"').trim(false);
                     run_tests_pass(parser, &tests);
                 });
             });
