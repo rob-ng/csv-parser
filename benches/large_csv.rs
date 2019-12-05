@@ -7,7 +7,11 @@ pub fn criterion_benchmark(c: &mut Criterion) {
         b.iter(|| {
             let csv = File::open("./large.csv").unwrap();
             let mut parser = Parser::new();
-            parser.trim(true).detect_columns(true).skip_empty_rows(true);
+            parser
+                .trim(true)
+                .detect_columns(true)
+                .skip_empty_rows(true)
+                .relax_column_count_less(true);
             for _record in parser.parse(csv) {}
         })
     });

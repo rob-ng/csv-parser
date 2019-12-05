@@ -34,6 +34,7 @@ pub struct Parser {
     should_rtrim_fields: bool,
     should_skip_rows_with_error: bool,
     should_skip_empty_rows: bool,
+    should_relax_column_count_less: bool,
 }
 
 impl Parser {
@@ -48,6 +49,7 @@ impl Parser {
             should_rtrim_fields: false,
             should_skip_rows_with_error: false,
             should_skip_empty_rows: true,
+            should_relax_column_count_less: false,
         }
     }
 
@@ -73,6 +75,8 @@ impl Parser {
         self.columns.replace(columns);
         self
     }
+
+    config!(relax_column_count_less, should_relax_column_count_less);
 
     config!(skip_empty_rows, should_skip_empty_rows);
 
@@ -130,14 +134,31 @@ where
                 &mut Option<Vec<String>>,
             ) -> Result<Option<Vec<String>>>,
         > = vec![];
-        let skip_rows_with_error: &'a dyn Fn(
+        if parser.should_relax_column_count_less {
+            let field_middleware: &'a dyn Fn(
+                Result<Option<Vec<String>>>,
+                &mut Option<Vec<String>>,
+            ) -> Result<Option<Vec<String>>> = &|mut record, columns| {
+                let record_ref = &mut record;
+                match (record_ref, &columns) {
+                    (Ok(Some(record)), Some(columns)) if record.len() < columns.len() => {
+                        record.resize(columns.len(), String::from(""));
+                    }
+                    _ => (),
+                };
+                record
+            };
+            record_middleware.push(field_middleware)
+        };
+
+        let column_middleware: &'a dyn Fn(
             Result<Option<Vec<String>>>,
             &mut Option<Vec<String>>,
         ) -> Result<Option<Vec<String>>> = match parser.should_detect_columns {
             true => &|record, columns| ParserIterator::<R>::record_column_detect(record, columns),
             false => &|record, columns| ParserIterator::<R>::record_column_default(record, columns),
         };
-        record_middleware.push(skip_rows_with_error);
+        record_middleware.push(column_middleware);
         if parser.should_skip_rows_with_error {
             let skip_rows_with_error: &'a dyn Fn(
                 Result<Option<Vec<String>>>,
@@ -499,6 +520,45 @@ describe!(parser_tests, {
     }
 
     describe!(configuration, {
+        describe!(relax_column_count_less, {
+            describe!(when_on, {
+                use crate::parser_tests::*;
+                it!(should_allow_for_records_with_missing_fields_and_give_said_fields_default_values, {
+                    let tests = [(
+                        "a,b,c\nd,e\ng\n",
+                        vec![
+                            vec!["a", "b", "c"],
+                            vec!["d", "e", ""],
+                            vec!["g", "", ""],
+                        ],
+                        "Turning on `relax_column_count_less` should fill any missing fields with empty string.",
+                    )];
+                    let mut parser = Parser::new();
+                    parser.separator(',').quote('"').relax_column_count_less(true);
+                    run_tests_pass(parser, &tests);
+                });
+            });
+
+            describe!(when_off, {
+                use crate::parser_tests::*;
+                it!(
+                    should_cause_records_with_too_few_fields_to_result_in_an_err,
+                    {
+                        let tests = [(
+                        "a,b,c\nd,e\ng\n",
+                        "Turning off `relax_column_count_less` should cause records with too few fields to return Errs.",
+                    )];
+                        let mut parser = Parser::new();
+                        parser
+                            .separator(',')
+                            .quote('"')
+                            .relax_column_count_less(false);
+                        run_tests_fail(parser, &tests);
+                    }
+                );
+            });
+        });
+
         describe!(newline, {
             use crate::parser_tests::*;
             it!(should_parse_csv_using_given_string_as_newline_terminator, {
