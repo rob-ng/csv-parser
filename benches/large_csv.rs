@@ -11,7 +11,8 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                 .trim(true)
                 .detect_columns(true)
                 .skip_empty_rows(true)
-                .relax_column_count_less(true);
+                .relax_column_count_less(true)
+                .relax_column_count_more(true);
             for _record in parser.parse(csv) {}
         })
     });

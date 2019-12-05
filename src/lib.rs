@@ -35,6 +35,7 @@ pub struct Parser {
     should_skip_rows_with_error: bool,
     should_skip_empty_rows: bool,
     should_relax_column_count_less: bool,
+    should_relax_column_count_more: bool,
 }
 
 impl Parser {
@@ -50,6 +51,7 @@ impl Parser {
             should_skip_rows_with_error: false,
             should_skip_empty_rows: true,
             should_relax_column_count_less: false,
+            should_relax_column_count_more: false,
         }
     }
 
@@ -77,6 +79,8 @@ impl Parser {
     }
 
     config!(relax_column_count_less, should_relax_column_count_less);
+
+    config!(relax_column_count_more, should_relax_column_count_more);
 
     config!(skip_empty_rows, should_skip_empty_rows);
 
@@ -143,6 +147,22 @@ where
                 match (record_ref, &columns) {
                     (Ok(Some(record)), Some(columns)) if record.len() < columns.len() => {
                         record.resize(columns.len(), String::from(""));
+                    }
+                    _ => (),
+                };
+                record
+            };
+            record_middleware.push(field_middleware)
+        };
+        if parser.should_relax_column_count_more {
+            let field_middleware: &'a dyn Fn(
+                Result<Option<Vec<String>>>,
+                &mut Option<Vec<String>>,
+            ) -> Result<Option<Vec<String>>> = &|mut record, columns| {
+                let record_ref = &mut record;
+                match (record_ref, &columns) {
+                    (Ok(Some(record)), Some(columns)) if record.len() > columns.len() => {
+                        record.truncate(columns.len());
                     }
                     _ => (),
                 };
@@ -520,6 +540,45 @@ describe!(parser_tests, {
     }
 
     describe!(configuration, {
+        describe!(relax_column_count_more, {
+            describe!(when_on, {
+                use crate::parser_tests::*;
+                it!(should_allow_for_records_with_missing_fields_and_give_said_fields_default_values, {
+                    let tests = [(
+                        "a,b,c\nd,e,f,g\nh,i,j,k,l\n",
+                        vec![
+                            vec!["a", "b", "c"],
+                            vec!["d", "e", "f"],
+                            vec!["h", "i", "j"],
+                        ],
+                        "Turning on `relax_column_count_more` should ignore any extra fields.",
+                    )];
+                    let mut parser = Parser::new();
+                    parser.separator(',').quote('"').relax_column_count_more(true);
+                    run_tests_pass(parser, &tests);
+                });
+            });
+
+            describe!(when_off, {
+                use crate::parser_tests::*;
+                it!(
+                    should_cause_records_with_too_many_fields_to_result_in_an_err,
+                    {
+                        let tests = [(
+                            "a,b,c\nd,e,f,g\nh,i,j,k,l\n",
+                            "Turning off `relax_column_count_more` should cause records with too many fields to return Errs.",
+                        )];
+                        let mut parser = Parser::new();
+                        parser
+                            .separator(',')
+                            .quote('"')
+                            .relax_column_count_more(false);
+                        run_tests_fail(parser, &tests);
+                    }
+                );
+            });
+        });
+
         describe!(relax_column_count_less, {
             describe!(when_on, {
                 use crate::parser_tests::*;
