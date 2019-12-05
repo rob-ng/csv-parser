@@ -82,6 +82,12 @@ impl Parser {
 
     config!(relax_column_count_more, should_relax_column_count_more);
 
+    pub fn relax_column_count(&mut self, should_relax: bool) -> &mut Self {
+        self.should_relax_column_count_less = should_relax;
+        self.should_relax_column_count_more = should_relax;
+        self
+    }
+
     config!(skip_empty_rows, should_skip_empty_rows);
 
     config!(skip_rows_with_error, should_skip_rows_with_error);
@@ -540,6 +546,41 @@ describe!(parser_tests, {
     }
 
     describe!(configuration, {
+        describe!(relax_column_count, {
+            describe!(when_on, {
+                use crate::parser_tests::*;
+                it!(
+                    should_allow_and_account_for_records_with_too_many_or_too_few_fields,
+                    {
+                        let tests = [(
+                            "a,b,c\nd,e,f,g\nh\n",
+                            vec![vec!["a", "b", "c"], vec!["d", "e", "f"], vec!["h", "", ""]],
+                            "Turning on `relax_column_count` should handle records with either too many or too few fields.",
+                        )];
+                        let mut parser = Parser::new();
+                        parser.separator(',').quote('"').relax_column_count(true);
+                        run_tests_pass(parser, &tests);
+                    }
+                );
+            });
+
+            describe!(when_off, {
+                use crate::parser_tests::*;
+                it!(
+                    should_cause_records_with_too_many_fields_to_result_in_an_err,
+                    {
+                        let tests = [(
+                            "a,b,c\nd,e,f,g\nh\n",
+                            "Turning off `relax_column_count` should cause records with too many or too few fields to return Errs.",
+                        )];
+                        let mut parser = Parser::new();
+                        parser.separator(',').quote('"').relax_column_count(false);
+                        run_tests_fail(parser, &tests);
+                    }
+                );
+            });
+        });
+
         describe!(relax_column_count_more, {
             describe!(when_on, {
                 use crate::parser_tests::*;
