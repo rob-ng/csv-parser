@@ -411,13 +411,19 @@ struct Lines<'a, B> {
     buf: B,
     newline: &'a [u8],
     last: u8,
+    last_lines_len: usize,
 }
 
 impl<'a, B> Lines<'a, B> {
     fn new(buf: B, newline: &'a str) -> Self {
         let newline = newline.as_bytes();
         let last = *newline.last().expect("newline cannot be empty") as u8;
-        Lines { buf, newline, last }
+        Lines {
+            buf,
+            newline,
+            last,
+            last_lines_len: 0,
+        }
     }
 }
 
@@ -426,7 +432,7 @@ impl<'a, B: BufRead> Iterator for Lines<'a, B> {
 
     // TODO Handle different kinds of errors
     fn next(&mut self) -> Option<Self::Item> {
-        let mut buf = vec![];
+        let mut buf = Vec::with_capacity(self.last_lines_len);
         loop {
             match self.buf.read_until(self.last, &mut buf) {
                 Ok(0) => {
@@ -445,7 +451,10 @@ impl<'a, B: BufRead> Iterator for Lines<'a, B> {
             };
         }
         return match String::from_utf8(buf) {
-            Ok(s) => Some(Ok(s)),
+            Ok(s) => {
+                self.last_lines_len = s.len();
+                Some(Ok(s))
+            }
             Err(_e) => Some(Err(String::from("Not valid UTF-8"))),
         };
     }
