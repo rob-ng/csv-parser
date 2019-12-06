@@ -3,8 +3,12 @@ use std::iter::Peekable;
 
 const SEPARATOR: char = ',';
 const QUOTE: char = '"';
+const NEWLINE: &str = "\n";
 
-type Result<T> = std::result::Result<T, String>;
+type Error = String;
+type Result<T> = std::result::Result<T, Error>;
+type Field = String;
+type Record = Vec<Field>;
 
 macro_rules! config {
     ($name:ident, $field:ident) => {
@@ -29,7 +33,7 @@ pub struct Parser {
     newline: String,
     // Behavior
     should_detect_columns: bool,
-    columns: Option<Vec<String>>,
+    columns: Option<Record>,
     should_ltrim_fields: bool,
     should_rtrim_fields: bool,
     should_skip_rows_with_error: bool,
@@ -43,7 +47,7 @@ impl Parser {
         Parser {
             quote: QUOTE,
             separator: SEPARATOR,
-            newline: String::from("\n"),
+            newline: String::from(NEWLINE),
             should_detect_columns: false,
             columns: None,
             should_ltrim_fields: false,
@@ -73,7 +77,7 @@ impl Parser {
 
     config!(detect_columns, should_detect_columns);
 
-    pub fn columns(&mut self, columns: Vec<String>) -> &mut Self {
+    pub fn columns(&mut self, columns: Record) -> &mut Self {
         self.columns.replace(columns);
         self
     }
@@ -100,23 +104,21 @@ impl Parser {
     }
 }
 
+type RecordMiddleware<'a> =
+    &'a dyn Fn(Result<Option<Record>>, &mut Option<Record>) -> Result<Option<Record>>;
+
 pub struct ParserIterator<'a, R>
 where
     R: Read,
 {
     csv: Peekable<Lines<'a, BufReader<R>>>,
     curr_line: Vec<char>,
-    columns: Option<Vec<String>>,
+    columns: Option<Record>,
     parser: &'a Parser,
-    parse_quote: &'a dyn Fn(&mut Self) -> Result<String>,
-    parse_text: &'a dyn Fn(&mut Self) -> Result<String>,
-    parse_record: &'a dyn Fn(&mut Self) -> Result<Option<Vec<String>>>,
-    record_middleware: Vec<
-        &'a dyn Fn(
-            Result<Option<Vec<String>>>,
-            &mut Option<Vec<String>>,
-        ) -> Result<Option<Vec<String>>>,
-    >,
+    parse_quote: &'a dyn Fn(&mut Self) -> Result<Field>,
+    parse_text: &'a dyn Fn(&mut Self) -> Result<Field>,
+    parse_record: &'a dyn Fn(&mut Self) -> Result<Option<Record>>,
+    record_middleware: Vec<RecordMiddleware<'a>>,
     read_line: &'a dyn Fn(&mut Self) -> Option<usize>,
 }
 
@@ -125,78 +127,40 @@ where
     R: Read,
 {
     fn new(csv_source: R, parser: &'a Parser) -> Self {
-        let parse_quote = &|s: &mut Self| ParserIterator::quote_default(s);
+        let parse_quote = &Self::quote_default;
 
-        let parse_text: &'a dyn Fn(&mut Self) -> Result<String> =
+        let parse_text: &'a dyn Fn(&mut Self) -> Result<Field> =
             match (parser.should_ltrim_fields, parser.should_rtrim_fields) {
-                (true, true) => &|s: &mut Self| ParserIterator::text_trim(s),
-                (true, false) => &|s: &mut Self| ParserIterator::text_ltrim(s),
-                (false, true) => &|s: &mut Self| ParserIterator::text_rtrim(s),
-                (false, false) => &|s: &mut Self| ParserIterator::text_default(s),
+                (true, true) => &Self::text_trim,
+                (true, false) => &Self::text_ltrim,
+                (false, true) => &Self::text_rtrim,
+                (false, false) => &Self::text_default,
             };
 
-        let parse_record: &'a dyn Fn(&mut Self) -> Result<Option<Vec<String>>> =
-            &|s: &mut Self| ParserIterator::record_default(s);
+        let parse_record: &'a dyn Fn(&mut Self) -> Result<Option<Record>> = &Self::record_default;
 
-        let mut record_middleware: Vec<
-            &'a dyn Fn(
-                Result<Option<Vec<String>>>,
-                &mut Option<Vec<String>>,
-            ) -> Result<Option<Vec<String>>>,
-        > = vec![];
-        if parser.should_relax_column_count_less {
-            let field_middleware: &'a dyn Fn(
-                Result<Option<Vec<String>>>,
-                &mut Option<Vec<String>>,
-            ) -> Result<Option<Vec<String>>> = &|mut record, columns| {
-                let record_ref = &mut record;
-                match (record_ref, &columns) {
-                    (Ok(Some(record)), Some(columns)) if record.len() < columns.len() => {
-                        record.resize(columns.len(), String::from(""));
-                    }
-                    _ => (),
-                };
-                record
+        let record_middleware: Vec<RecordMiddleware<'a>> = {
+            let mut middleware: Vec<RecordMiddleware<'a>> = vec![];
+            if parser.should_relax_column_count_less {
+                middleware.push(&Self::record_relax_columns_less);
             };
-            record_middleware.push(field_middleware)
-        };
-        if parser.should_relax_column_count_more {
-            let field_middleware: &'a dyn Fn(
-                Result<Option<Vec<String>>>,
-                &mut Option<Vec<String>>,
-            ) -> Result<Option<Vec<String>>> = &|mut record, columns| {
-                let record_ref = &mut record;
-                match (record_ref, &columns) {
-                    (Ok(Some(record)), Some(columns)) if record.len() > columns.len() => {
-                        record.truncate(columns.len());
-                    }
-                    _ => (),
-                };
-                record
+            if parser.should_relax_column_count_more {
+                middleware.push(&Self::record_relax_columns_more);
             };
-            record_middleware.push(field_middleware)
+            middleware.push(match parser.should_detect_columns {
+                true => &Self::record_column_detect,
+                false => &Self::record_column_default,
+            });
+            if parser.should_skip_rows_with_error {
+                middleware.push(&Self::record_skip_on_error);
+            }
+            middleware
         };
-
-        let column_middleware: &'a dyn Fn(
-            Result<Option<Vec<String>>>,
-            &mut Option<Vec<String>>,
-        ) -> Result<Option<Vec<String>>> = match parser.should_detect_columns {
-            true => &|record, columns| ParserIterator::<R>::record_column_detect(record, columns),
-            false => &|record, columns| ParserIterator::<R>::record_column_default(record, columns),
-        };
-        record_middleware.push(column_middleware);
-        if parser.should_skip_rows_with_error {
-            let skip_rows_with_error: &'a dyn Fn(
-                Result<Option<Vec<String>>>,
-                &mut Option<Vec<String>>,
-            ) -> Result<Option<Vec<String>>> = &|record, _| record.or(Ok(None));
-            record_middleware.push(skip_rows_with_error);
-        }
 
         let read_line: &'a dyn Fn(&mut Self) -> Option<usize> = if parser.should_skip_empty_rows {
-            &|slf| ParserIterator::read_line_no_empty(slf)
+            &Self::read_line_no_empty
         } else {
-            &|slf| ParserIterator::read_line_default(slf)
+            &Self::read_line_default
         };
 
         ParserIterator {
@@ -248,7 +212,7 @@ where
     }
 
     // Record
-    fn record(&mut self) -> Result<Option<Vec<String>>> {
+    fn record(&mut self) -> Result<Option<Record>> {
         let record = (self.parse_record)(self);
         let columns = &mut self.columns;
         self.record_middleware
@@ -256,7 +220,7 @@ where
             .fold(record, move |record, mw| mw(record, columns))
     }
 
-    fn record_default(&mut self) -> Result<Option<Vec<String>>> {
+    fn record_default(&mut self) -> Result<Option<Record>> {
         let mut fields = vec![];
 
         loop {
@@ -287,10 +251,47 @@ where
         Ok(Some(fields))
     }
 
+    fn record_skip_on_error(
+        record: Result<Option<Record>>,
+        _columns: &mut Option<Record>,
+    ) -> Result<Option<Record>> {
+        record.or(Ok(None))
+    }
+
+    fn record_relax_columns_less(
+        mut record: Result<Option<Record>>,
+        columns: &mut Option<Record>,
+    ) -> Result<Option<Record>> {
+        let record_ref = &mut record;
+        match (record_ref, &columns) {
+            (Ok(Some(record)), Some(columns)) if record.len() < columns.len() => {
+                record.resize(columns.len(), String::from(""));
+            }
+            _ => (),
+        };
+        record
+    }
+
+    fn record_relax_columns_more(
+        mut record: Result<Option<Record>>,
+        columns: &mut Option<Record>,
+    ) -> Result<Option<Record>> {
+        {
+            let record_ref = &mut record;
+            match (record_ref, &columns) {
+                (Ok(Some(record)), Some(columns)) if record.len() > columns.len() => {
+                    record.truncate(columns.len());
+                }
+                _ => (),
+            };
+            record
+        }
+    }
+
     fn record_column_default(
-        fields: Result<Option<Vec<String>>>,
-        columns: &mut Option<Vec<String>>,
-    ) -> Result<Option<Vec<String>>> {
+        fields: Result<Option<Record>>,
+        columns: &mut Option<Record>,
+    ) -> Result<Option<Record>> {
         fields.and_then(|fields_option| match fields_option {
             Some(fields) => match columns.as_mut() {
                 Some(columns) if columns.len() == fields.len() => Ok(Some(fields)),
@@ -310,9 +311,9 @@ where
     }
 
     fn record_column_detect(
-        fields: Result<Option<Vec<String>>>,
-        columns: &mut Option<Vec<String>>,
-    ) -> Result<Option<Vec<String>>> {
+        fields: Result<Option<Record>>,
+        columns: &mut Option<Record>,
+    ) -> Result<Option<Record>> {
         fields.and_then(|fields_option| match fields_option {
             Some(fields) => match columns.as_mut() {
                 Some(columns) if columns.len() == fields.len() => Ok(Some(fields)),
@@ -331,7 +332,7 @@ where
     }
 
     // Field
-    fn field(&mut self) -> Result<String> {
+    fn field(&mut self) -> Result<Field> {
         match self.curr_line.last() {
             Some(&c) if c == self.parser.quote => (self.parse_quote)(self),
             _ => (self.parse_text)(self),
@@ -339,7 +340,7 @@ where
     }
 
     // Field - Quote
-    fn quote_default(&mut self) -> Result<String> {
+    fn quote_default(&mut self) -> Result<Field> {
         // Remove initial quotation mark.
         self.curr_line.pop();
 
@@ -379,12 +380,12 @@ where
     }
 
     // Field - Text
-    fn text_default(&mut self) -> Result<String> {
+    fn text_default(&mut self) -> Result<Field> {
         self.text_base()
             .map(|field_chars| field_chars.iter().collect())
     }
 
-    fn text_ltrim(&mut self) -> Result<String> {
+    fn text_ltrim(&mut self) -> Result<Field> {
         loop {
             match self.curr_line.last() {
                 Some(&c) if self.parser.should_ltrim_fields && c.is_whitespace() => {
@@ -397,7 +398,7 @@ where
             .map(|field_chars| field_chars.iter().collect())
     }
 
-    fn text_rtrim(&mut self) -> Result<String> {
+    fn text_rtrim(&mut self) -> Result<Field> {
         self.text_base().map(|mut field_chars| {
             loop {
                 match field_chars.last() {
@@ -411,7 +412,7 @@ where
         })
     }
 
-    fn text_trim(&mut self) -> Result<String> {
+    fn text_trim(&mut self) -> Result<Field> {
         loop {
             match self.curr_line.last() {
                 Some(&c) if self.parser.should_ltrim_fields && c.is_whitespace() => {
@@ -447,7 +448,7 @@ impl<'a, R> Iterator for ParserIterator<'a, R>
 where
     R: Read,
 {
-    type Item = Result<Vec<String>>;
+    type Item = Result<Record>;
     fn next(&mut self) -> Option<Self::Item> {
         match self.read_line() {
             None => None,
@@ -481,7 +482,7 @@ impl<'a, B> Lines<'a, B> {
 }
 
 impl<'a, B: BufRead> Iterator for Lines<'a, B> {
-    type Item = Result<String>;
+    type Item = Result<Field>;
 
     // TODO Handle different kinds of errors
     fn next(&mut self) -> Option<Self::Item> {
@@ -522,11 +523,11 @@ describe!(parser_tests, {
 
     pub fn run_tests_pass(parser: Parser, tests: &[(&str, Vec<Vec<&str>>, &str)]) {
         verify_all!(tests.iter().map(|(given, expected, reason)| {
-            let found: Result<Vec<Vec<String>>> = parser.parse(given.as_bytes()).collect();
+            let found: Result<Vec<Record>> = parser.parse(given.as_bytes()).collect();
             let reason = format!("{}.\nGiven:\n{}", reason, given);
             match &found {
                 Ok(found) => {
-                    let expected: Vec<Vec<String>> = expected
+                    let expected: Vec<Record> = expected
                         .iter()
                         .map(|v| v.iter().map(|v| v.to_string()).collect())
                         .collect();
@@ -539,7 +540,7 @@ describe!(parser_tests, {
 
     pub fn run_tests_fail(parser: Parser, tests: &[(&str, &str)]) {
         verify_all!(tests.iter().map(|(given, reason)| {
-            let found: Result<Vec<Vec<String>>> = parser.parse(given.as_bytes()).collect();
+            let found: Result<Vec<Record>> = parser.parse(given.as_bytes()).collect();
             let reason = format!("{}.\nGiven:\n{}", reason, given);
             that!(found).will_be_err().because(&reason)
         }));
