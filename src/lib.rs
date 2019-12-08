@@ -1,6 +1,6 @@
 pub mod error;
-pub mod parser_iterator;
-use parser_iterator::ParserIterator;
+pub mod records;
+use records::Records;
 
 use std::io::Read;
 
@@ -94,11 +94,11 @@ impl Parser {
 
     config!(skip_rows_with_error, should_skip_rows_with_error);
 
-    pub fn parse<R>(&self, csv_source: R) -> ParserIterator<R>
+    pub fn records<R>(&self, csv_source: R) -> Records<R>
     where
         R: Read,
     {
-        ParserIterator::new(csv_source, self)
+        Records::new(csv_source, self)
     }
 }
 
@@ -112,7 +112,7 @@ describe!(parser_tests, {
     pub fn run_tests_pass(parser: Parser, tests: &[(&str, Vec<Vec<&str>>, &str)]) {
         verify_all!(tests.iter().map(|(given, expected, reason)| {
             let found: std::result::Result<Vec<Vec<String>>, Error> =
-                parser.parse(given.as_bytes()).collect();
+                parser.records(given.as_bytes()).collect();
             let reason = format!("{}.\nGiven:\n{}", reason, given);
             match &found {
                 Ok(found) => {
@@ -130,7 +130,7 @@ describe!(parser_tests, {
     pub fn run_tests_fail(parser: Parser, tests: &[(&str, &str)]) {
         verify_all!(tests.iter().map(|(given, reason)| {
             let found: std::result::Result<Vec<Vec<String>>, Error> =
-                parser.parse(given.as_bytes()).collect();
+                parser.records(given.as_bytes()).collect();
             let reason = format!("{}.\nGiven:\n{}", reason, given);
             that!(found).will_be_err().because(&reason)
         }));

@@ -12,7 +12,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                 .detect_columns(true)
                 .skip_empty_rows(true)
                 .relax_column_count(true);
-            for _record in parser.parse(csv) {}
+            for _record in parser.records(csv) {}
         })
     });
 }

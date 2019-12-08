@@ -9,8 +9,7 @@ type Record = Vec<Field>;
 type RecordMiddleware<'a> =
     &'a dyn Fn(Result<Option<Record>>, &mut Option<Record>) -> Result<Option<Record>>;
 
-// TODO Rename to `Parsed` to better match Rust convention of iterators being `cloned()` => `Cloned`
-pub struct ParserIterator<'a, R>
+pub struct Records<'a, R>
 where
     R: Read,
 {
@@ -25,7 +24,7 @@ where
     read_line: &'a dyn Fn(&mut Self) -> Result<Option<usize>>,
 }
 
-impl<'a, R> ParserIterator<'a, R>
+impl<'a, R> Records<'a, R>
 where
     R: Read,
 {
@@ -68,7 +67,7 @@ where
                 &Self::read_line_default
             };
 
-        ParserIterator {
+        Records {
             parser,
             csv: Lines::new(BufReader::new(csv_source), parser.newline.as_ref()),
             curr_line: vec![],
@@ -313,7 +312,7 @@ where
     }
 }
 
-impl<'a, R> Iterator for ParserIterator<'a, R>
+impl<'a, R> Iterator for Records<'a, R>
 where
     R: Read,
 {
