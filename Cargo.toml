@@ -11,7 +11,12 @@ jestr = { path = "../jestr" }
 
 [dev-dependencies]
 criterion = "0.3"
+burntcsv = {package = "csv", version = "1.1"}
 
 [[bench]]
 name = "large_csv"
+harness = false
+
+[[bench]]
+name = "burnt_large_csv"
 harness = false
