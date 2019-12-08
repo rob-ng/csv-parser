@@ -116,7 +116,7 @@ where
     }
 
     fn record_default(&mut self) -> Result<Option<Record>> {
-        let mut fields = vec![];
+        let mut fields = Vec::with_capacity(self.columns.as_ref().map_or(1, |cols| cols.len()));
 
         loop {
             let field = self.field()?;
@@ -228,7 +228,7 @@ where
         // Remove initial quotation mark.
         self.curr_line.pop();
 
-        let mut field = String::new();
+        let mut field = String::with_capacity(self.curr_line.len());
 
         loop {
             if self.curr_line.len() == 0 {
@@ -268,7 +268,7 @@ where
     }
 
     fn text_default(&mut self) -> Result<Vec<char>> {
-        let mut field = vec![];
+        let mut field = Vec::with_capacity(self.curr_line.len());
 
         loop {
             match self.curr_line.last() {
