@@ -53,7 +53,6 @@ where
                 true => &Self::record_column_detect,
                 false => &Self::record_column_default,
             });
-            // TODO MAKE THIS PART OF READING AND ACCOUNT FOR UNHANDLEABLE ERRORS
             if parser.should_skip_rows_with_error {
                 middleware.push(&Self::record_skip_on_error);
             }
@@ -141,8 +140,10 @@ where
         record: Result<Option<Record>>,
         _columns: &mut Option<Record>,
     ) -> Result<Option<Record>> {
-        // TODO Only skip parsing errors, not IO or UTF8
-        record.or(Ok(None))
+        record.or_else(|err| match &err {
+            ErrorKind::BadField(..) | ErrorKind::UnequalNumFields { .. } => Ok(None),
+            _ => Err(err),
+        })
     }
 
     fn record_relax_columns_less(

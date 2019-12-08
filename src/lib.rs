@@ -273,18 +273,69 @@ describe!(parser_tests, {
 
         describe!(skip_rows_with_error, {
             describe!(when_on, {
-                use crate::parser_tests::*;
-                it!(should_skip_lines_with_an_error, {
-                    let tests = [(
-                        "a\",b,c\nd,e,f\ng,h\n",
-                        vec![
-                            vec!["d", "e", "f"],
-                        ],
-                        "Turning on `skip_rows_with_error` should skip any rows with a field that fails to parse.",
-                    )];
-                    let mut parser = Parser::new();
-                    parser.separator(',').quote('"').skip_rows_with_error(true);
-                    run_tests_pass(parser, &tests);
+                describe!(and_the_parser_finds_a_malformed_line, {
+                    use crate::parser_tests::*;
+                    it!(should_skip_the_line, {
+                        let tests = [(
+                            "a\",b,c\nd,e,f\ng,h\n",
+                            vec![
+                                vec!["d", "e", "f"],
+                            ],
+                            "Turning on `skip_rows_with_error` should skip any rows with a field that fails to parse.",
+                        )];
+                        let mut parser = Parser::new();
+                        parser.separator(',').quote('"').skip_rows_with_error(true);
+                        run_tests_pass(parser, &tests);
+                    });
+                });
+
+                describe!(and_the_parser_encounters_any_other_error, {
+                    #[derive(Copy, Clone)]
+                    enum BadReader {
+                        OnRead,
+                        InvalidUtf8,
+                        None,
+                    }
+                    impl Read for BadReader {
+                        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                            let res = match self {
+                                BadReader::OnRead => Err(std::io::Error::new(
+                                    std::io::ErrorKind::UnexpectedEof,
+                                    "error",
+                                )),
+                                BadReader::InvalidUtf8 => {
+                                    // some invalid bytes, in a vector
+                                    let mut bytes = vec![0, 159, 146, 150];
+                                    buf[0..bytes.len()].copy_from_slice(&mut bytes);
+                                    Ok(bytes.len())
+                                }
+                                BadReader::None => Ok(0),
+                            };
+                            *self = BadReader::None;
+                            res
+                        }
+                    }
+                    use crate::parser_tests::*;
+                    it!(should_not_skip_the_error, {
+                        let tests: [(BadReader, &str); 2] = [
+                            (
+                                BadReader::OnRead,
+                                "Turning on `skip_rows_with_error` should not skip IO errors.",
+                            ),
+                            (
+                                BadReader::InvalidUtf8,
+                                "Turning on `skip_rows_with_error` should not skip UTF-8 errors.",
+                            ),
+                        ];
+                        let mut parser = Parser::new();
+                        parser.separator(',').quote('"').skip_rows_with_error(true);
+                        verify_all!(tests.iter().map(|&(given, reason)| {
+                            let found: std::result::Result<Vec<Vec<String>>, Error> =
+                                parser.records(given).collect();
+                            let reason = format!("{}", reason);
+                            that!(found).will_be_err().because(&reason)
+                        }));
+                    });
                 });
             });
 
