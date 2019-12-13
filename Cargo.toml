@@ -17,8 +17,13 @@ burntcsv = {package = "csv", version = "1.1"}
 name = "large_csv"
 harness = false
 
-[profile.release]
-debug = true
+[[bench]]
+name = "burnt_large_csv"
+harness = false
 
-[profile.bench]
+[[bench]]
+name = "just_read"
+harness = false
+
+[profile.release]
 debug = true
