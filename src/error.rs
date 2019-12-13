@@ -18,7 +18,7 @@ pub enum ErrorKind {
     BadField(String),
     UnequalNumFields { expected_num: usize, num: usize },
     Io(std::io::Error),
-    Utf8(std::string::FromUtf8Error),
+    Utf8(std::str::Utf8Error),
 }
 
 impl Display for Error {
@@ -73,8 +73,8 @@ impl From<std::io::Error> for ErrorKind {
     }
 }
 
-impl From<std::string::FromUtf8Error> for ErrorKind {
-    fn from(e: std::string::FromUtf8Error) -> Self {
+impl From<std::str::Utf8Error> for ErrorKind {
+    fn from(e: std::str::Utf8Error) -> Self {
         ErrorKind::Utf8(e)
     }
 }

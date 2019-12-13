@@ -1,6 +1,6 @@
 pub mod error;
 pub mod records;
-use records::Records;
+use records::{Config, Record, Records};
 
 use std::io::Read;
 
@@ -11,72 +11,50 @@ pub const NEWLINE: &str = "\n";
 macro_rules! config {
     ($name:ident, $field:ident) => {
         pub fn $name(&mut self, value: bool) -> &mut Self {
-            self.$field = value;
+            self.config.$field = value;
             self
         }
     };
 
     ($name:ident, $field:ident, $value_type:ty) => {
         pub fn $name(&mut self, value: $value_type) -> &mut Self {
-            self.$field = value;
+            self.config.$field = value;
             self
         }
     };
 }
 
 pub struct Parser {
-    // Special characters
-    quote: char,
-    separator: char,
-    newline: String,
-    // Behavior
-    should_detect_columns: bool,
-    columns: Option<Vec<String>>,
-    should_ltrim_fields: bool,
-    should_rtrim_fields: bool,
-    should_skip_rows_with_error: bool,
-    should_skip_empty_rows: bool,
-    should_relax_column_count_less: bool,
-    should_relax_column_count_more: bool,
+    config: Config,
 }
 
 impl Parser {
     pub fn new() -> Self {
         Parser {
-            quote: QUOTE,
-            separator: SEPARATOR,
-            newline: String::from(NEWLINE),
-            should_detect_columns: false,
-            columns: None,
-            should_ltrim_fields: false,
-            should_rtrim_fields: false,
-            should_skip_rows_with_error: false,
-            should_skip_empty_rows: true,
-            should_relax_column_count_less: false,
-            should_relax_column_count_more: false,
+            config: Default::default(),
         }
     }
 
-    config!(separator, separator, char);
+    config!(separator, separator, u8);
 
-    config!(quote, quote, char);
+    config!(quote, quote, u8);
 
-    config!(newline, newline, String);
+    config!(newline, newline, Vec<u8>);
 
     config!(ltrim, should_ltrim_fields);
 
     config!(rtrim, should_rtrim_fields);
 
     pub fn trim(&mut self, should_trim: bool) -> &mut Self {
-        self.should_ltrim_fields = should_trim;
-        self.should_rtrim_fields = should_trim;
+        self.config.should_ltrim_fields = should_trim;
+        self.config.should_rtrim_fields = should_trim;
         self
     }
 
     config!(detect_columns, should_detect_columns);
 
     pub fn columns(&mut self, columns: Vec<String>) -> &mut Self {
-        self.columns.replace(columns);
+        self.config.columns.replace(columns);
         self
     }
 
@@ -85,8 +63,8 @@ impl Parser {
     config!(relax_column_count_more, should_relax_column_count_more);
 
     pub fn relax_column_count(&mut self, should_relax: bool) -> &mut Self {
-        self.should_relax_column_count_less = should_relax;
-        self.should_relax_column_count_more = should_relax;
+        self.config.should_relax_column_count_less = should_relax;
+        self.config.should_relax_column_count_more = should_relax;
         self
     }
 
@@ -98,7 +76,8 @@ impl Parser {
     where
         R: Read,
     {
-        Records::new(csv_source, self)
+        let config = self.config.clone();
+        Records::new(csv_source, config)
     }
 }
 
@@ -111,16 +90,13 @@ describe!(parser_tests, {
 
     pub fn run_tests_pass(parser: Parser, tests: &[(&str, Vec<Vec<&str>>, &str)]) {
         verify_all!(tests.iter().map(|(given, expected, reason)| {
-            let found: std::result::Result<Vec<Vec<String>>, Error> =
+            let found: std::result::Result<Vec<Record>, Error> =
                 parser.records(given.as_bytes()).collect();
             let reason = format!("{}.\nGiven:\n{}", reason, given);
             match &found {
                 Ok(found) => {
-                    let expected: Vec<Vec<String>> = expected
-                        .iter()
-                        .map(|v| v.iter().map(|v| v.to_string()).collect())
-                        .collect();
-                    that!(found).will_equal(&expected).because(&reason)
+                    let found: Vec<Vec<&str>> = found.iter().map(|f| f.fields()).collect();
+                    that!(&found).will_equal(expected).because(&reason)
                 }
                 Err(_) => that!(found).will_be_ok().because(&reason),
             }
@@ -129,7 +105,7 @@ describe!(parser_tests, {
 
     pub fn run_tests_fail(parser: Parser, tests: &[(&str, &str)]) {
         verify_all!(tests.iter().map(|(given, reason)| {
-            let found: std::result::Result<Vec<Vec<String>>, Error> =
+            let found: std::result::Result<Vec<Record>, Error> =
                 parser.records(given.as_bytes()).collect();
             let reason = format!("{}.\nGiven:\n{}", reason, given);
             that!(found).will_be_err().because(&reason)
@@ -149,7 +125,7 @@ describe!(parser_tests, {
                             "Turning on `relax_column_count` should handle records with either too many or too few fields.",
                         )];
                         let mut parser = Parser::new();
-                        parser.separator(',').quote('"').relax_column_count(true);
+                        parser.separator(b',').quote(b'"').relax_column_count(true);
                         run_tests_pass(parser, &tests);
                     }
                 );
@@ -165,7 +141,7 @@ describe!(parser_tests, {
                             "Turning off `relax_column_count` should cause records with too many or too few fields to return Errs.",
                         )];
                         let mut parser = Parser::new();
-                        parser.separator(',').quote('"').relax_column_count(false);
+                        parser.separator(b',').quote(b'"').relax_column_count(false);
                         run_tests_fail(parser, &tests);
                     }
                 );
@@ -186,7 +162,7 @@ describe!(parser_tests, {
                         "Turning on `relax_column_count_more` should ignore any extra fields.",
                     )];
                     let mut parser = Parser::new();
-                    parser.separator(',').quote('"').relax_column_count_more(true);
+                    parser.separator(b',').quote(b'"').relax_column_count_more(true);
                     run_tests_pass(parser, &tests);
                 });
             });
@@ -202,8 +178,8 @@ describe!(parser_tests, {
                         )];
                         let mut parser = Parser::new();
                         parser
-                            .separator(',')
-                            .quote('"')
+                            .separator(b',')
+                            .quote(b'"')
                             .relax_column_count_more(false);
                         run_tests_fail(parser, &tests);
                     }
@@ -225,7 +201,7 @@ describe!(parser_tests, {
                         "Turning on `relax_column_count_less` should fill any missing fields with empty string.",
                     )];
                     let mut parser = Parser::new();
-                    parser.separator(',').quote('"').relax_column_count_less(true);
+                    parser.separator(b',').quote(b'"').relax_column_count_less(true);
                     run_tests_pass(parser, &tests);
                 });
             });
@@ -241,8 +217,8 @@ describe!(parser_tests, {
                     )];
                         let mut parser = Parser::new();
                         parser
-                            .separator(',')
-                            .quote('"')
+                            .separator(b',')
+                            .quote(b'"')
                             .relax_column_count_less(false);
                         run_tests_fail(parser, &tests);
                     }
@@ -264,9 +240,9 @@ describe!(parser_tests, {
                 )];
                 let mut parser = Parser::new();
                 parser
-                    .separator(',')
-                    .quote('"')
-                    .newline(String::from("NEWLINE"));
+                    .separator(b',')
+                    .quote(b'"')
+                    .newline(b"NEWLINE".to_vec());
                 run_tests_pass(parser, &tests);
             });
         });
@@ -284,7 +260,10 @@ describe!(parser_tests, {
                             "Turning on `skip_rows_with_error` should skip any rows with a field that fails to parse.",
                         )];
                         let mut parser = Parser::new();
-                        parser.separator(',').quote('"').skip_rows_with_error(true);
+                        parser
+                            .separator(b',')
+                            .quote(b'"')
+                            .skip_rows_with_error(true);
                         run_tests_pass(parser, &tests);
                     });
                 });
@@ -328,9 +307,12 @@ describe!(parser_tests, {
                             ),
                         ];
                         let mut parser = Parser::new();
-                        parser.separator(',').quote('"').skip_rows_with_error(true);
+                        parser
+                            .separator(b',')
+                            .quote(b'"')
+                            .skip_rows_with_error(true);
                         verify_all!(tests.iter().map(|&(given, reason)| {
-                            let found: std::result::Result<Vec<Vec<String>>, Error> =
+                            let found: std::result::Result<Vec<Record>, Error> =
                                 parser.records(given).collect();
                             let reason = format!("{}", reason);
                             that!(found).will_be_err().because(&reason)
@@ -347,7 +329,10 @@ describe!(parser_tests, {
                         "Turning off `skip_rows_with_error` should cause parser to return `Err` after encountering an error.",
                     )];
                     let mut parser = Parser::new();
-                    parser.separator(',').quote('"').skip_rows_with_error(false);
+                    parser
+                        .separator(b',')
+                        .quote(b'"')
+                        .skip_rows_with_error(false);
                     run_tests_fail(parser, &tests);
                 });
             });
@@ -358,16 +343,30 @@ describe!(parser_tests, {
                 use crate::parser_tests::*;
                 it!(should_ignore_empty_rows, {
                     let tests = [(
-                        "\n\n\na,b,c\n\n\nd,e,f\n\n\ng,h,i\n\n\n\n",
+                        "     \n\n\na,b,c\n\t\t\n\nd,e,f\n\n\ng,h,i\n\n\n\n",
                         vec![
                             vec!["a", "b", "c"],
                             vec!["d", "e", "f"],
                             vec!["g", "h", "i"],
                         ],
-                        "Turning on `skip_empty_rows` should skip empty rows in CSV file.",
+                        "Turning on `skip_empty_rows` should skip rows in CSV containing only whitespace.",
+                    ),
+                    (
+                        "a\n\"  \t\n\"\nb",
+                        vec![
+                            vec!["a"],
+                            vec!["  \t\n"],
+                            vec!["b"],
+                        ],
+                        "Turning on `skip_empty_rows` should *not* affect empty rows in quoted fields.",
                     )];
                     let mut parser = Parser::new();
-                    parser.separator(',').quote('"').skip_empty_rows(true);
+                    parser
+                        .separator(b',')
+                        .quote(b'"')
+                        .skip_empty_rows(true)
+                        // Disable trim so fields of only whitespace aren't cleared.
+                        .trim(false);
                     run_tests_pass(parser, &tests);
                 });
             });
@@ -385,7 +384,12 @@ describe!(parser_tests, {
                         "Turning *off* `skip_empty_rows` should cause empty rows *not* to be skipped",
                     )];
                     let mut parser = Parser::new();
-                    parser.separator(',').quote('"').skip_empty_rows(false);
+                    parser
+                        .separator(b',')
+                        .quote(b'"')
+                        .skip_empty_rows(false)
+                        // Disable trim so fields of only whitespace aren't cleared.
+                        .trim(false);
                     run_tests_pass(parser, &tests);
                 });
             });
@@ -404,7 +408,7 @@ describe!(parser_tests, {
                         "Turning on `detect_columns` should prevent first row from being returned as a record",
                     )];
                     let mut parser = Parser::new();
-                    parser.separator(',').quote('"').detect_columns(true);
+                    parser.separator(b',').quote(b'"').detect_columns(true);
                     run_tests_pass(parser, &tests);
                 });
 
@@ -422,8 +426,8 @@ describe!(parser_tests, {
                         )];
                         let mut parser = Parser::new();
                         parser
-                            .separator(',')
-                            .quote('"')
+                            .separator(b',')
+                            .quote(b'"')
                             .detect_columns(true)
                             .columns(vec![
                                 String::from("a"),
@@ -448,45 +452,7 @@ describe!(parser_tests, {
                         "Turning off `detect_columns` should cause the first row to be treated as a record",
                     )];
                     let mut parser = Parser::new();
-                    parser.separator(',').quote('"').detect_columns(false);
-                    run_tests_pass(parser, &tests);
-                });
-            });
-        });
-
-        describe!(rtrim, {
-            describe!(when_on, {
-                use crate::parser_tests::*;
-                it!(should_ignore_whitespace_to_left_of_fields, {
-                    let tests = [(
-                        "a   ,b  \u{A0},c   \u{3000}\nd ,e   ,f\ng \t\t,h,i \u{A0}\u{3000}\t",
-                        vec![
-                            vec!["a", "b", "c"],
-                            vec!["d", "e", "f"],
-                            vec!["g", "h", "i"],
-                        ],
-                        "Turning on `rtrim` should remove all types of whitespace after fields",
-                    )];
-                    let mut parser = Parser::new();
-                    parser.separator(',').quote('"').rtrim(true);
-                    run_tests_pass(parser, &tests);
-                });
-            });
-
-            describe!(when_off, {
-                use crate::parser_tests::*;
-                it!(should_keep_whitespace_to_left_of_fields, {
-                    let tests = [(
-                        "a   ,b  \u{A0},c   \u{3000}\nd ,e   ,f\ng \t\t,h,i \u{A0}\u{3000}\t",
-                        vec![
-                            vec!["a   ", "b  \u{A0}", "c   \u{3000}"],
-                            vec!["d ", "e   ", "f"],
-                            vec!["g \t\t", "h", "i \u{A0}\u{3000}\t"],
-                        ],
-                        "Turning *off* `rtrim` should *not* remove whitespace after fields",
-                    )];
-                    let mut parser = Parser::new();
-                    parser.separator(',').quote('"').rtrim(false);
+                    parser.separator(b',').quote(b'"').detect_columns(false);
                     run_tests_pass(parser, &tests);
                 });
             });
@@ -497,16 +463,16 @@ describe!(parser_tests, {
                 use crate::parser_tests::*;
                 it!(should_ignore_whitespace_to_left_of_fields, {
                     let tests = [(
-                        "   a,  \u{A0}b,   \u{3000}c\n d,   e,f\n \t\tg,h, \u{A0}\u{3000}\ti",
+                        "   \"a\",  \u{A0}b,   \u{3000}c\n d,   e,f\n \t\tg,h, \u{A0}\u{3000}\ti",
                         vec![
                             vec!["a", "b", "c"],
                             vec!["d", "e", "f"],
                             vec!["g", "h", "i"],
                         ],
-                        "Turning on `ltrim` should remove all whitespace before fields",
+                        "Turning on `ltrim` should remove all whitespace before fields (quoted and unquoted)",
                     )];
                     let mut parser = Parser::new();
-                    parser.separator(',').quote('"').ltrim(true);
+                    parser.separator(b',').quote(b'"').ltrim(true).rtrim(false);
                     run_tests_pass(parser, &tests);
                 });
             });
@@ -524,7 +490,45 @@ describe!(parser_tests, {
                         "Turning *off* `ltrim` should *not* remove whitespace before fields",
                     )];
                     let mut parser = Parser::new();
-                    parser.separator(',').quote('"').ltrim(false);
+                    parser.separator(b',').quote(b'"').ltrim(false).rtrim(false);
+                    run_tests_pass(parser, &tests);
+                });
+            });
+        });
+
+        describe!(rtrim, {
+            describe!(when_on, {
+                use crate::parser_tests::*;
+                it!(should_ignore_whitespace_to_right_of_fields, {
+                    let tests = [(
+                        "\"a\"   ,b  \u{A0},c   \u{3000}\nd ,e   ,f\ng \t\t,h,i \u{A0}\u{3000}\t",
+                        vec![
+                            vec!["a", "b", "c"],
+                            vec!["d", "e", "f"],
+                            vec!["g", "h", "i"],
+                        ],
+                        "Turning on `rtrim` should remove all types of whitespace after fields (quoted and unquoted)",
+                    )];
+                    let mut parser = Parser::new();
+                    parser.separator(b',').quote(b'"').ltrim(false).rtrim(true);
+                    run_tests_pass(parser, &tests);
+                });
+            });
+
+            describe!(when_off, {
+                use crate::parser_tests::*;
+                it!(should_keep_whitespace_to_right_of_fields, {
+                    let tests = [(
+                        "a   ,b  \u{A0},c   \u{3000}\nd ,e   ,f\ng \t\t,h,i \u{A0}\u{3000}\t",
+                        vec![
+                            vec!["a   ", "b  \u{A0}", "c   \u{3000}"],
+                            vec!["d ", "e   ", "f"],
+                            vec!["g \t\t", "h", "i \u{A0}\u{3000}\t"],
+                        ],
+                        "Turning *off* `rtrim` should *not* remove whitespace after fields",
+                    )];
+                    let mut parser = Parser::new();
+                    parser.separator(b',').quote(b'"').ltrim(false).rtrim(false);
                     run_tests_pass(parser, &tests);
                 });
             });
@@ -544,7 +548,7 @@ describe!(parser_tests, {
                         "Turning on `trim` should remove all whitespace before and after fields",
                     )];
                     let mut parser = Parser::new();
-                    parser.separator(',').quote('"').trim(true);
+                    parser.separator(b',').quote(b'"').trim(true);
                     run_tests_pass(parser, &tests);
                 });
             });
@@ -562,7 +566,7 @@ describe!(parser_tests, {
                         "Turning *off* `trim` should *not* remove whitespace before and after fields",
                     )];
                     let mut parser = Parser::new();
-                    parser.separator(',').quote('"').trim(false);
+                    parser.separator(b',').quote(b'"').trim(false);
                     run_tests_pass(parser, &tests);
                 });
             });
@@ -609,7 +613,7 @@ describe!(parser_tests, {
                 ),
             ];
             let mut parser = Parser::new();
-            parser.separator(',').quote('"');
+            parser.separator(b',').quote(b'"').trim(false);
             run_tests_pass(parser, &tests);
         });
     });
@@ -630,7 +634,7 @@ describe!(parser_tests, {
                     ),
                 ];
                 let mut parser = Parser::new();
-                parser.separator(',').quote('"');
+                parser.separator(b',').quote(b'"');
                 run_tests_fail(parser, &tests);
             });
 
@@ -650,7 +654,7 @@ describe!(parser_tests, {
                             ),
                         ];
                         let mut parser = Parser::new();
-                        parser.separator(',').quote('"');
+                        parser.separator(b',').quote(b'"');
                         run_tests_fail(parser, &tests);
                     });
                 }
