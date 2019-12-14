@@ -190,7 +190,7 @@ where
 
         let mut old_buf_len = record_buf.len();
         let mut end = start;
-        loop {
+        while end < record_buf.len() {
             if end >= record_buf.len_sans_newline() {
                 old_buf_len = record_buf.len();
                 match record_buf.append_line(&mut self.csv_reader) {
@@ -200,19 +200,15 @@ where
                 };
             }
 
-            match record_buf.get(end) {
-                Some(&c) if c == self.config.quote => {
-                    let next_index = end + 1;
-                    match record_buf.get(next_index) {
-                        Some(&c) if c == self.config.quote => {
-                            // Remove duplicate leaving only escaped quote in buffer.
-                            record_buf.remove(next_index);
-                        }
-                        _ => return Ok((start..end, next_index)),
+            if record_buf.get_unchecked(end) == self.config.quote {
+                let next_index = end + 1;
+                match record_buf.get(next_index) {
+                    Some(&c) if c == self.config.quote => {
+                        // Remove duplicate leaving only escaped quote in buffer.
+                        record_buf.remove(next_index);
                     }
+                    _ => return Ok((start..end, next_index)),
                 }
-                Some(_c) => (),
-                None => break,
             }
 
             end += 1
@@ -232,8 +228,8 @@ where
         let mut end = start;
 
         while end < record_buf.len_sans_newline() {
-            match record_buf.get(end) {
-                Some(&c) if c == self.config.quote => {
+            match record_buf.get_unchecked(end) {
+                c if c == self.config.quote => {
                     return Err(ErrorKind::BadField {
                         col: end,
                         msg: format!(
@@ -242,7 +238,7 @@ where
                         ),
                     });
                 }
-                Some(&c) if c != self.config.separator => end += 1,
+                c if c != self.config.separator => end += 1,
                 _ => break,
             }
         }
@@ -545,6 +541,12 @@ impl RecordBuffer {
         self.buf.get(index)
     }
 
+    // 20% improvement from inlining this. No idea why.
+    #[inline]
+    fn get_unchecked(&self, index: usize) -> u8 {
+        self.buf[index]
+    }
+
     // 3.5% improvement from inlining this.
     #[inline]
     fn len(&self) -> usize {
@@ -554,7 +556,7 @@ impl RecordBuffer {
     // 20% improvement from inlining this. No idea why.
     #[inline]
     fn len_sans_newline(&self) -> usize {
-        self.len() - self.len_from_trailing_newline
+        self.buf.len() - self.len_from_trailing_newline
     }
 
     // Negligible improvement from inlining this.
