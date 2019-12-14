@@ -1,12 +1,9 @@
-pub mod error;
-pub mod records;
-use records::{Config, Record, Records};
-
 use std::io::Read;
-
-pub const SEPARATOR: char = ',';
-pub const QUOTE: char = '"';
-pub const NEWLINE: &str = "\n";
+mod error;
+mod records;
+pub use error::{Error, ErrorKind};
+use records::Config;
+pub use records::{Record, Records};
 
 macro_rules! config {
     ($name:ident, $field:ident) => {
@@ -35,43 +32,57 @@ impl Parser {
         }
     }
 
+    /// Sets field separator to given byte.
     config!(separator, separator, u8);
 
+    /// Sets quote marker to given byte.
     config!(quote, quote, u8);
 
+    /// Sets newline terminator to given bytes.
     config!(newline, newline, Vec<u8>);
 
+    /// Determines whether fields should be left-trimmed of whitespace.
     config!(ltrim, should_ltrim_fields);
 
+    /// Determines whether fields should be right-trimmed of whitespace.
     config!(rtrim, should_rtrim_fields);
 
+    /// Determines whether fields should be left *and* right trimmed of whitespace.
     pub fn trim(&mut self, should_trim: bool) -> &mut Self {
         self.config.should_ltrim_fields = should_trim;
         self.config.should_rtrim_fields = should_trim;
         self
     }
 
+    /// Determines whether first row should be treated as column names for subsequent rows.
     config!(detect_columns, should_detect_columns);
 
+    /// Sets column names for rows to given values. Overrides `detect_columns`.
     pub fn columns(&mut self, columns: Vec<String>) -> &mut Self {
         self.config.columns.replace(columns);
         self
     }
 
+    /// Determines whether records should be allowed to have fewer fields than the number of columns.
     config!(relax_column_count_less, should_relax_column_count_less);
 
+    /// Determines whether records should be allowed to have more fields than the number of columns.
     config!(relax_column_count_more, should_relax_column_count_more);
 
+    /// Determines whether records should be allowed to have more *or* fewer fields than the number of columns.
     pub fn relax_column_count(&mut self, should_relax: bool) -> &mut Self {
         self.config.should_relax_column_count_less = should_relax;
         self.config.should_relax_column_count_more = should_relax;
         self
     }
 
+    /// Determines whether rows of only whitespace should be skipped. Does not apply to rows in quoted fields.
     config!(skip_empty_rows, should_skip_empty_rows);
 
+    /// Determines whether parsing errors from malformed CSV should be skipped. Other kinds of errors (e.g. IO) are not affected.
     config!(skip_rows_with_error, should_skip_rows_with_error);
 
+    /// Returns an iterator of `Record`s from a readable source of CSV.
     pub fn records<R>(&self, csv_source: R) -> Records<R>
     where
         R: Read,
@@ -82,7 +93,7 @@ impl Parser {
 }
 
 #[cfg(test)]
-use {crate::error::Error, jestr::*};
+use jestr::*;
 
 #[cfg(test)]
 describe!(parser_tests, {
@@ -122,7 +133,7 @@ describe!(parser_tests, {
                         let tests = [(
                             "a,b,c\nd,e,f,g\nh\n",
                             vec![vec!["a", "b", "c"], vec!["d", "e", "f"], vec!["h", "", ""]],
-                            "Turning on `relax_column_count` should handle records with either too many or too few fields.",
+                            "Turning on `relax_column_count` should handle records with either too many or too few fields",
                         )];
                         let mut parser = Parser::new();
                         parser.separator(b',').quote(b'"').relax_column_count(true);
@@ -138,7 +149,7 @@ describe!(parser_tests, {
                     {
                         let tests = [(
                             "a,b,c\nd,e,f,g\nh\n",
-                            "Turning off `relax_column_count` should cause records with too many or too few fields to return Errs.",
+                            "Turning off `relax_column_count` should cause records with too many or too few fields to return Errs",
                         )];
                         let mut parser = Parser::new();
                         parser.separator(b',').quote(b'"').relax_column_count(false);
@@ -159,7 +170,7 @@ describe!(parser_tests, {
                             vec!["d", "e", "f"],
                             vec!["h", "i", "j"],
                         ],
-                        "Turning on `relax_column_count_more` should ignore any extra fields.",
+                        "Turning on `relax_column_count_more` should ignore any extra fields",
                     )];
                     let mut parser = Parser::new();
                     parser.separator(b',').quote(b'"').relax_column_count_more(true);
@@ -174,7 +185,7 @@ describe!(parser_tests, {
                     {
                         let tests = [(
                             "a,b,c\nd,e,f,g\nh,i,j,k,l\n",
-                            "Turning off `relax_column_count_more` should cause records with too many fields to return Errs.",
+                            "Turning off `relax_column_count_more` should cause records with too many fields to return Errs",
                         )];
                         let mut parser = Parser::new();
                         parser
@@ -198,7 +209,7 @@ describe!(parser_tests, {
                             vec!["d", "e", ""],
                             vec!["g", "", ""],
                         ],
-                        "Turning on `relax_column_count_less` should fill any missing fields with empty string.",
+                        "Turning on `relax_column_count_less` should fill any missing fields with empty string",
                     )];
                     let mut parser = Parser::new();
                     parser.separator(b',').quote(b'"').relax_column_count_less(true);
@@ -213,7 +224,7 @@ describe!(parser_tests, {
                     {
                         let tests = [(
                         "a,b,c\nd,e\ng\n",
-                        "Turning off `relax_column_count_less` should cause records with too few fields to return Errs.",
+                        "Turning off `relax_column_count_less` should cause records with too few fields to return Errs",
                     )];
                         let mut parser = Parser::new();
                         parser
@@ -257,7 +268,7 @@ describe!(parser_tests, {
                             vec![
                                 vec!["d", "e", "f"],
                             ],
-                            "Turning on `skip_rows_with_error` should skip any rows with a field that fails to parse.",
+                            "Turning on `skip_rows_with_error` should skip any rows with a field that fails to parse",
                         )];
                         let mut parser = Parser::new();
                         parser
@@ -299,11 +310,11 @@ describe!(parser_tests, {
                         let tests: [(BadReader, &str); 2] = [
                             (
                                 BadReader::OnRead,
-                                "Turning on `skip_rows_with_error` should not skip IO errors.",
+                                "Turning on `skip_rows_with_error` should not skip IO errors",
                             ),
                             (
                                 BadReader::InvalidUtf8,
-                                "Turning on `skip_rows_with_error` should not skip UTF-8 errors.",
+                                "Turning on `skip_rows_with_error` should not skip UTF-8 errors",
                             ),
                         ];
                         let mut parser = Parser::new();
@@ -326,7 +337,7 @@ describe!(parser_tests, {
                 it!(should_not_ignore_empty_rows, {
                     let tests = [(
                         "a\",b,c\nd,e,f\ng,h\n",
-                        "Turning off `skip_rows_with_error` should cause parser to return `Err` after encountering an error.",
+                        "Turning off `skip_rows_with_error` should cause parser to return `Err` after encountering an error",
                     )];
                     let mut parser = Parser::new();
                     parser
@@ -349,7 +360,7 @@ describe!(parser_tests, {
                             vec!["d", "e", "f"],
                             vec!["g", "h", "i"],
                         ],
-                        "Turning on `skip_empty_rows` should skip rows in CSV containing only whitespace.",
+                        "Turning on `skip_empty_rows` should skip rows in CSV containing only whitespace",
                     ),
                     (
                         "a\n\"  \t\n\"\nb",
@@ -358,7 +369,7 @@ describe!(parser_tests, {
                             vec!["  \t\n"],
                             vec!["b"],
                         ],
-                        "Turning on `skip_empty_rows` should *not* affect empty rows in quoted fields.",
+                        "Turning on `skip_empty_rows` should *not* affect empty rows in quoted fields",
                     )];
                     let mut parser = Parser::new();
                     parser
@@ -623,19 +634,25 @@ describe!(parser_tests, {
             pub use crate::parser_tests::*;
             it!(should_return_an_err_when_parse_results_are_collected, {
                 let tests = [
-                    ("ab\"cd", "Non-quoted fields cannot contain quotation marks"),
+                    (
+                        "ab\"cd",
+                        vec![],
+                        "Non-quoted fields cannot contain quotation marks",
+                    ),
                     (
                         "\"abc\"def",
+                        vec![],
                         "Quoted fields cannot contain trailing unquoted values",
                     ),
                     (
                         "\"def\n\"\"ghi\"\"",
+                        vec![],
                         "Quoted fields must include both open and closing quotations",
                     ),
                 ];
                 let mut parser = Parser::new();
                 parser.separator(b',').quote(b'"');
-                run_tests_fail(parser, &tests);
+                run_tests_pass(parser, &tests);
             });
 
             describe!(

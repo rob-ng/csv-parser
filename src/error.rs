@@ -1,42 +1,45 @@
+use std::error::Error as StdError;
 use std::fmt::{self, Debug, Display};
 
 #[derive(Debug)]
 pub struct Error {
     line: usize,
-    col: usize,
     kind: ErrorKind,
 }
 
 impl Error {
-    pub fn new(line: usize, col: usize, kind: ErrorKind) -> Self {
-        Error { line, col, kind }
+    pub fn new(line: usize, kind: ErrorKind) -> Self {
+        Error { line, kind }
     }
 }
 
 #[derive(Debug)]
 pub enum ErrorKind {
-    BadField(String),
+    BadField { col: usize, msg: String },
     UnequalNumFields { expected_num: usize, num: usize },
     Io(std::io::Error),
     Utf8(std::str::Utf8Error),
 }
+
+impl StdError for Error {}
 
 impl Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Error {
                 line,
-                col,
-                kind: ErrorKind::BadField(msg),
+                kind: ErrorKind::BadField { col, msg },
             } => write!(
                 f,
-                "Field is malformed: {} (line: {}, column: {})",
-                msg, line, col
+                "Field is malformed: {} (line: {}, col: {})",
+                msg,
+                line,
+                // Columns, like lines, should start at 1.
+                col + 1
             ),
             Error {
                 line,
                 kind: ErrorKind::UnequalNumFields { expected_num, num },
-                ..
             } => {
                 let relation = if num < expected_num {
                     "too few"
@@ -52,17 +55,11 @@ impl Display for Error {
             Error {
                 line,
                 kind: ErrorKind::Io(err),
-                ..
             } => write!(f, "Problem reading CSV: {} (line: {})", err, line),
             Error {
                 line,
-                col,
                 kind: ErrorKind::Utf8(err),
-            } => write!(
-                f,
-                "CSV contains invalid UTF-8: {} (line: {}, column: {})",
-                err, line, col
-            ),
+            } => write!(f, "CSV contains invalid UTF-8: {} (line: {})", err, line),
         }
     }
 }
