@@ -17,6 +17,7 @@ impl Error {
 pub enum ErrorKind {
     BadField { col: usize, msg: String },
     UnequalNumFields { expected_num: usize, num: usize },
+    RecordTooLarge { max_record_size: usize },
     Io(std::io::Error),
     Utf8(std::str::Utf8Error),
 }
@@ -52,6 +53,14 @@ impl Display for Error {
                     relation, num, expected_num, line
                 )
             }
+            Error {
+                line,
+                kind: ErrorKind::RecordTooLarge { max_record_size },
+            } => write!(
+                f,
+                "Record exceeds max record size '{} bytes' (line: {})",
+                max_record_size, line
+            ),
             Error {
                 line,
                 kind: ErrorKind::Io(err),

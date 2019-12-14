@@ -4,12 +4,36 @@ use std::ops::Range;
 
 type Result<T> = std::result::Result<T, ErrorKind>;
 
+/// Represents a CSV record.
+#[derive(Debug)]
+pub struct Record {
+    /// Contents of the record.
+    buf: RecordBuffer,
+    /// Ranges describing locations of fields within `buf`.
+    field_bounds: Vec<Range<usize>>,
+}
+
+impl<'a> Record {
+    fn new(buf: RecordBuffer, field_bounds: Vec<Range<usize>>) -> Self {
+        Record { buf, field_bounds }
+    }
+
+    /// Returns record's fields as strings.
+    pub fn fields(&self) -> Vec<&str> {
+        self.field_bounds
+            .iter()
+            .map(|bounds| &self.buf.as_str()[bounds.clone()])
+            .collect()
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct Config {
+    pub(crate) columns: Option<Vec<String>>,
+    pub(crate) max_record_size: usize,
     pub(crate) newline: Vec<u8>,
     pub(crate) quote: u8,
     pub(crate) separator: u8,
-    pub(crate) columns: Option<Vec<String>>,
     pub(crate) should_detect_columns: bool,
     pub(crate) should_ltrim_fields: bool,
     pub(crate) should_rtrim_fields: bool,
@@ -22,10 +46,11 @@ pub(crate) struct Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
+            columns: None,
+            max_record_size: 4096,
             newline: vec![b'\n'],
             quote: b'"',
             separator: b',',
-            columns: None,
             should_detect_columns: false,
             should_ltrim_fields: true,
             should_rtrim_fields: true,
@@ -72,7 +97,7 @@ where
     R: Read,
 {
     pub(crate) fn new(csv: R, config: Config) -> Self {
-        let csv_reader = CsvReader::new(csv, &config.newline);
+        let csv_reader = CsvReader::new(csv, &config.newline, config.max_record_size);
 
         let on_read_line = {
             let mut on_read_line: Vec<
@@ -223,6 +248,39 @@ where
         }
 
         Ok((start..end, end))
+    }
+}
+
+impl<R> Iterator for Records<R>
+where
+    R: Read,
+{
+    type Item = std::result::Result<Record, Error>;
+    fn next(&mut self) -> Option<Self::Item> {
+        let next_record_buf = RecordBuffer::new(&mut self.csv_reader);
+        let line_reader = &mut self.csv_reader;
+        let record_buf = match self
+            .on_read_line
+            .iter()
+            .fold(next_record_buf, |line, on_read_line| {
+                on_read_line(line_reader, line)
+            }) {
+            Some(Ok(buf)) => buf,
+            Some(Err(e)) => return Some(Err(Error::new(self.csv_reader.line_count, e))),
+            None => return None,
+        };
+
+        let next_record = self.record(record_buf);
+        let columns = &mut self.columns;
+        match self
+            .on_record
+            .iter()
+            .fold(next_record, |record, on_record| on_record(record, columns))
+        {
+            Some(Ok(record)) => Some(Ok(record)),
+            Some(Err(e)) => Some(Err(Error::new(self.csv_reader.line_count, e))),
+            None => self.next(),
+        }
     }
 }
 
@@ -438,62 +496,6 @@ where
     }
 }
 
-impl<R> Iterator for Records<R>
-where
-    R: Read,
-{
-    type Item = std::result::Result<Record, Error>;
-    fn next(&mut self) -> Option<Self::Item> {
-        let next_record_buf = RecordBuffer::new(&mut self.csv_reader);
-        let line_reader = &mut self.csv_reader;
-        let record_buf = match self
-            .on_read_line
-            .iter()
-            .fold(next_record_buf, |line, on_read_line| {
-                on_read_line(line_reader, line)
-            }) {
-            Some(Ok(buf)) => buf,
-            Some(Err(e)) => return Some(Err(Error::new(self.csv_reader.line_count, e))),
-            None => return None,
-        };
-
-        let next_record = self.record(record_buf);
-        let columns = &mut self.columns;
-        match self
-            .on_record
-            .iter()
-            .fold(next_record, |record, on_record| on_record(record, columns))
-        {
-            Some(Ok(record)) => Some(Ok(record)),
-            Some(Err(e)) => Some(Err(Error::new(self.csv_reader.line_count, e))),
-            None => self.next(),
-        }
-    }
-}
-
-/// Represents a CSV record.
-#[derive(Debug)]
-pub struct Record {
-    /// Contents of the record.
-    buf: RecordBuffer,
-    /// Ranges describing locations of fields within `buf`.
-    field_bounds: Vec<Range<usize>>,
-}
-
-impl<'a> Record {
-    fn new(buf: RecordBuffer, field_bounds: Vec<Range<usize>>) -> Self {
-        Record { buf, field_bounds }
-    }
-
-    /// Returns record's fields as strings.
-    pub fn fields(&self) -> Vec<&str> {
-        self.field_bounds
-            .iter()
-            .map(|bounds| &self.buf.as_str()[bounds.clone()])
-            .collect()
-    }
-}
-
 #[derive(Debug)]
 struct RecordBuffer {
     buf: Vec<u8>,
@@ -563,22 +565,24 @@ impl RecordBuffer {
 }
 
 struct CsvReader<R> {
-    reader: BufReader<R>,
-    newline: Vec<u8>,
-    line_count: usize,
     last_lines_capacity: usize,
+    line_count: usize,
+    max_record_size: usize,
+    newline: Vec<u8>,
+    reader: BufReader<R>,
 }
 
 impl<R> CsvReader<R>
 where
     R: Read,
 {
-    fn new(reader: R, newline: &[u8]) -> Self {
+    fn new(reader: R, newline: &[u8], max_record_size: usize) -> Self {
         CsvReader {
-            reader: BufReader::new(reader),
-            newline: Vec::from(newline),
-            line_count: 0,
             last_lines_capacity: 0,
+            line_count: 0,
+            max_record_size,
+            newline: newline.to_vec(),
+            reader: BufReader::new(reader),
         }
     }
 
@@ -588,8 +592,19 @@ where
             .newline
             .last()
             .expect("Newline terminator cannot be empty");
+        // We allow 1 more byte than the limit to indicate the limit has been eclipsed.
+        let read_limit = if buf.len() > self.max_record_size {
+            0
+        } else {
+            self.max_record_size - buf.len() + 1
+        };
         let len_from_trailing_newline = loop {
-            match self.reader.read_until(*last, buf) {
+            match self
+                .reader
+                .by_ref()
+                .take(read_limit as u64)
+                .read_until(*last, buf)
+            {
                 Ok(0) => {
                     if buf.len() == 0 {
                         return None;
@@ -607,6 +622,11 @@ where
                 Err(e) => return Some(Err(ErrorKind::Io(e))),
             }
         };
+        if buf.len() >= read_limit {
+            return Some(Err(ErrorKind::RecordTooLarge {
+                max_record_size: self.max_record_size,
+            }));
+        }
         Some(Ok(len_from_trailing_newline))
     }
 }

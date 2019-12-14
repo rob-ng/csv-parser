@@ -32,6 +32,9 @@ impl Parser {
         }
     }
 
+    /// Sets maximum record size. Records longer than this value will result in an error.
+    config!(max_record_size, max_record_size, usize);
+
     /// Sets field separator to given byte.
     config!(separator, separator, u8);
 
@@ -124,6 +127,41 @@ describe!(parser_tests, {
     }
 
     describe!(configuration, {
+        describe!(max_record_size, {
+            use crate::parser_tests::*;
+            it!(
+                should_prevent_the_parser_from_reading_more_than_n_bytes_per_record,
+                {
+                    let tests = [(
+                        "a,b,c,d,e,f,g,h,i,j,k",
+                        "Setting `max_record_size` should result in error when record is too large",
+                    ),
+                    (
+                        "\"a,b,c,\nd,e,f\n,g,h,i\n,j,k\"",
+                        "Setting `max_record_size` should work with multiline quotes",
+                    )];
+                    let mut parser = Parser::new();
+                    parser.separator(b',').quote(b'"').max_record_size(10);
+                    run_tests_fail(parser, &tests);
+                }
+            );
+
+            it!(should_apply_on_a_per_record_basis, {
+                let tests = [(
+                    "a,b,c\nd,e,f\ng,h,i",
+                    vec![
+                        vec!["a", "b", "c"],
+                        vec!["d", "e", "f"],
+                        vec!["g", "h", "i"],
+                    ],
+                    "Setting `max_record_size` should affect bytes read per record, *not* total bytes read",
+                )];
+                let mut parser = Parser::new();
+                parser.separator(b',').quote(b'"').max_record_size(6);
+                run_tests_pass(parser, &tests);
+            });
+        });
+
         describe!(relax_column_count, {
             describe!(when_on, {
                 use crate::parser_tests::*;
@@ -634,25 +672,19 @@ describe!(parser_tests, {
             pub use crate::parser_tests::*;
             it!(should_return_an_err_when_parse_results_are_collected, {
                 let tests = [
-                    (
-                        "ab\"cd",
-                        vec![],
-                        "Non-quoted fields cannot contain quotation marks",
-                    ),
+                    ("ab\"cd", "Non-quoted fields cannot contain quotation marks"),
                     (
                         "\"abc\"def",
-                        vec![],
                         "Quoted fields cannot contain trailing unquoted values",
                     ),
                     (
                         "\"def\n\"\"ghi\"\"",
-                        vec![],
                         "Quoted fields must include both open and closing quotations",
                     ),
                 ];
                 let mut parser = Parser::new();
                 parser.separator(b',').quote(b'"');
-                run_tests_pass(parser, &tests);
+                run_tests_fail(parser, &tests);
             });
 
             describe!(
