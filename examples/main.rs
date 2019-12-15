@@ -2,7 +2,7 @@ use csv::*;
 use std::fs::File;
 
 fn main() {
-    let csv = File::open("./large.csv").unwrap();
+    let csv = File::open("./test.csv").unwrap();
     let mut parser = Parser::new();
     parser
         .trim(true)

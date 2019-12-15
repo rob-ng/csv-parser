@@ -186,41 +186,39 @@ where
         // Start at first byte after quotation byte.
         let start = start + 1;
 
-        let mut old_buf_len = record_buf.len();
         let mut end = start;
-        while end < record_buf.len() {
-            if end >= record_buf.len_sans_newline() {
-                old_buf_len = record_buf.len();
-                match record_buf.append_line(&mut self.csv_reader) {
-                    Some(Ok(())) => end = old_buf_len,
-                    Some(Err(e)) => return Err(e),
-                    None => break,
-                };
-            }
+        loop {
+            while end < record_buf.len_sans_newline() {
+                let curr = record_buf.get_unchecked(end);
+                let next_index = end + 1;
 
-            let curr = record_buf.get_unchecked(end);
-            let next_index = end + 1;
-
-            if curr == self.config.escape {
-                match record_buf.get(next_index) {
-                    Some(&c) if c == self.config.quote => {
-                        // Remove escape character from buffer leaving only escaped value.
-                        record_buf.remove(end);
+                if curr == self.config.escape {
+                    match record_buf.get(next_index) {
+                        Some(&c) if c == self.config.quote => {
+                            // Remove escape character from buffer leaving only escaped value.
+                            record_buf.remove(end);
+                        }
+                        _ if curr == self.config.quote => return Ok((start..end, next_index)),
+                        _ => (),
                     }
-                    _ if curr == self.config.quote => return Ok((start..end, next_index)),
-                    _ => (),
+                } else if curr == self.config.quote {
+                    return Ok((start..end, next_index));
                 }
-            } else if curr == self.config.quote {
-                return Ok((start..end, next_index));
+
+                end += 1
             }
-
-            end += 1
+            let old_buf_len = record_buf.len();
+            match record_buf.append_line(&mut self.csv_reader) {
+                Some(Ok(())) => end = old_buf_len,
+                Some(Err(e)) => return Err(e),
+                None => {
+                    return Err(ErrorKind::BadField {
+                        col: end - old_buf_len,
+                        msg: String::from("Quoted field is missing closing quotation"),
+                    })
+                }
+            };
         }
-
-        Err(ErrorKind::BadField {
-            col: end - old_buf_len,
-            msg: String::from("Quoted field is missing closing quotation"),
-        })
     }
 
     fn text(
@@ -230,7 +228,8 @@ where
     ) -> Result<(Range<usize>, usize)> {
         // Using while-loop here is faster than iteration in benchmarks. Probably has to due with overhead of creating iterators for each record.
         let mut end = start;
-        while end < record_buf.len_sans_newline() {
+        let max = record_buf.len_sans_newline();
+        while end < max {
             match record_buf.get_unchecked(end) {
                 byte if byte == self.config.separator => return Ok((start..end, end)),
                 byte if byte == self.config.quote => {
@@ -289,10 +288,13 @@ macro_rules! parse_field {
         if first_byte == &$self.config.quote {
             Some($self.quote($record_buf, $start).and_then(|(bounds, end)| {
                 match $record_buf.get(end) {
-                    Some(&c) if c == $self.config.separator => Ok((bounds, end)),
-                    Some(&_c) if end >= $record_buf.len_sans_newline() => Ok((bounds, end)),
+                    Some(&c)
+                        if c == $self.config.separator || end >= $record_buf.len_sans_newline() =>
+                    {
+                        Ok((bounds, end))
+                    }
                     None => Ok((bounds, end)),
-                    _ => Err(ErrorKind::BadField {
+                    Some(&_c) => Err(ErrorKind::BadField {
                         col: end,
                         msg: String::from("Quoted fields cannot contain trailing unquoted values"),
                     }),
@@ -306,24 +308,32 @@ macro_rules! parse_field {
     (right, $self:expr, $record_buf:expr, $start:expr) => {{
         let first_byte = $record_buf.get($start)?;
         if first_byte == &$self.config.quote {
-            Some($self.quote($record_buf, $start).and_then(|(bounds, end)| {
-                match $record_buf.get(end) {
-                    Some(&c) if c == $self.config.separator => return Ok((bounds, end)),
-                    Some(&_c) if end >= $record_buf.len_sans_newline() => return Ok((bounds, end)),
-                    None => return Ok((bounds, end)),
-                    Some(_) => (),
-                };
-                let end = parse_field!(trim_start, $record_buf, end);
-                match $record_buf.get(end) {
-                    Some(&c) if c == $self.config.separator => return Ok((bounds, end)),
-                    Some(&_c) if end >= $record_buf.len_sans_newline() => return Ok((bounds, end)),
-                    None => return Ok((bounds, end)),
-                    _ => Err(ErrorKind::BadField {
-                        col: end,
-                        msg: String::from("Quoted fields cannot contain trailing unquoted values"),
+            Some(
+                $self
+                    .quote($record_buf, $start)
+                    .and_then(|(bounds, mut end)| {
+                        if let Some(&c) = $record_buf.get(end) {
+                            if c != $self.config.separator && end < $record_buf.len_sans_newline() {
+                                end = parse_field!(trim_start, $record_buf, end);
+                            }
+                        }
+                        match $record_buf.get(end) {
+                            Some(&c)
+                                if c == $self.config.separator
+                                    || end >= $record_buf.len_sans_newline() =>
+                            {
+                                return Ok((bounds, end))
+                            }
+                            None => return Ok((bounds, end)),
+                            _ => Err(ErrorKind::BadField {
+                                col: end,
+                                msg: String::from(
+                                    "Quoted fields cannot contain trailing unquoted values",
+                                ),
+                            }),
+                        }
                     }),
-                }
-            }))
+            )
         } else {
             Some($self.text($record_buf, $start).map(|(mut bounds, end)| {
                 let buf_segment = &$record_buf.as_str()[bounds.clone()];
@@ -595,6 +605,7 @@ where
         } else {
             self.max_record_size - buf.len() + 1
         };
+        let mut bytes_read = 0;
         let len_from_trailing_newline = loop {
             match self
                 .reader
@@ -603,16 +614,17 @@ where
                 .read_until(*last, buf)
             {
                 Ok(0) => {
-                    if buf.is_empty() {
+                    if bytes_read == 0 {
                         return None;
                     } else {
                         break 0;
                     }
                 }
-                Ok(_n) => {
+                Ok(n) => {
                     if buf.ends_with(&self.newline) {
                         break self.newline.len();
                     } else {
+                        bytes_read += n;
                         continue;
                     }
                 }
