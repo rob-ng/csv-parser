@@ -280,6 +280,64 @@ where
     }
 }
 
+macro_rules! parse_field {
+    (left, $self:expr, $record_buf:expr, $start:expr) => {{
+        let first_byte = $record_buf.get($start)?;
+        if first_byte == &$self.config.quote {
+            Some($self.quote($record_buf, $start).and_then(|(bounds, end)| {
+                match $record_buf.get(end) {
+                    Some(&c) if c == $self.config.separator => Ok((bounds, end)),
+                    Some(&_c) if end >= $record_buf.len_sans_newline() => Ok((bounds, end)),
+                    None => Ok((bounds, end)),
+                    _ => Err(ErrorKind::BadField {
+                        col: end,
+                        msg: String::from("Quoted fields cannot contain trailing unquoted values"),
+                    }),
+                }
+            }))
+        } else {
+            Some($self.text($record_buf, $start))
+        }
+    }};
+
+    (right, $self:expr, $record_buf:expr, $start:expr) => {{
+        let first_byte = $record_buf.get($start)?;
+        if first_byte == &$self.config.quote {
+            Some($self.quote($record_buf, $start).and_then(|(bounds, end)| {
+                match $record_buf.get(end) {
+                    Some(&c) if c == $self.config.separator => return Ok((bounds, end)),
+                    Some(&_c) if end >= $record_buf.len_sans_newline() => return Ok((bounds, end)),
+                    None => return Ok((bounds, end)),
+                    Some(_) => (),
+                };
+                let end = parse_field!(trim_start, $record_buf, end);
+                match $record_buf.get(end) {
+                    Some(&c) if c == $self.config.separator => return Ok((bounds, end)),
+                    Some(&_c) if end >= $record_buf.len_sans_newline() => return Ok((bounds, end)),
+                    None => return Ok((bounds, end)),
+                    _ => Err(ErrorKind::BadField {
+                        col: end,
+                        msg: String::from("Quoted fields cannot contain trailing unquoted values"),
+                    }),
+                }
+            }))
+        } else {
+            Some($self.text($record_buf, $start).map(|(mut bounds, end)| {
+                let buf_segment = &$record_buf.as_str()[bounds.clone()];
+                let trimmed = buf_segment.trim_end().as_bytes();
+                bounds.end = bounds.start + trimmed.len();
+                (bounds, end)
+            }))
+        }
+    }};
+
+    (trim_start, $record_buf:expr, $start:expr) => {{
+        let buf_segment = &$record_buf.as_str()[$start..];
+        let trimmed = buf_segment.trim_start().as_bytes();
+        $record_buf.len() - trimmed.len()
+    }};
+}
+
 impl<R> Records<R>
 where
     R: Read,
@@ -289,22 +347,7 @@ where
         record_buf: &mut RecordBuffer,
         start: usize,
     ) -> Option<Result<(Range<usize>, usize)>> {
-        let first_byte = record_buf.get(start)?;
-        if first_byte == &self.config.quote {
-            Some(self.quote(record_buf, start).and_then(
-                |(bounds, end)| match record_buf.get(end) {
-                    Some(&c) if c == self.config.separator => Ok((bounds, end)),
-                    Some(&_c) if end >= record_buf.len_sans_newline() => Ok((bounds, end)),
-                    None => Ok((bounds, end)),
-                    _ => Err(ErrorKind::BadField {
-                        col: end,
-                        msg: String::from("Quoted fields cannot contain trailing unquoted values"),
-                    }),
-                },
-            ))
-        } else {
-            Some(self.text(record_buf, start))
-        }
+        parse_field!(left, self, record_buf, start)
     }
 
     fn parse_field_ltrim(
@@ -312,8 +355,8 @@ where
         record_buf: &mut RecordBuffer,
         start: usize,
     ) -> Option<Result<(Range<usize>, usize)>> {
-        let start = Self::trim_start(record_buf, start);
-        self.parse_field(record_buf, start)
+        let start = parse_field!(trim_start, record_buf, start);
+        parse_field!(left, self, record_buf, start)
     }
 
     fn parse_field_rtrim(
@@ -321,33 +364,7 @@ where
         record_buf: &mut RecordBuffer,
         start: usize,
     ) -> Option<Result<(Range<usize>, usize)>> {
-        let first_byte = record_buf.get(start)?;
-        if first_byte == &self.config.quote {
-            let quote = self.quote(record_buf, start);
-            Some(quote.and_then(|(bounds, end)| {
-                match record_buf.get(end) {
-                    Some(&c) if c == self.config.separator => return Ok((bounds, end)),
-                    Some(&_c) if end >= record_buf.len_sans_newline() => return Ok((bounds, end)),
-                    None => return Ok((bounds, end)),
-                    _ => (),
-                };
-                let end = Self::trim_start(record_buf, end);
-                match record_buf.get(end) {
-                    Some(&c) if c == self.config.separator => return Ok((bounds, end)),
-                    Some(&_c) if end >= record_buf.len_sans_newline() => return Ok((bounds, end)),
-                    None => return Ok((bounds, end)),
-                    _ => Err(ErrorKind::BadField {
-                        col: end,
-                        msg: String::from("Quoted fields cannot contain trailing unquoted values"),
-                    }),
-                }
-            }))
-        } else {
-            Some(self.text(record_buf, start).map(|(bounds, end)| {
-                let bounds = Self::trim_end(&record_buf, bounds);
-                (bounds, end)
-            }))
-        }
+        parse_field!(right, self, record_buf, start)
     }
 
     fn parse_field_trim(
@@ -355,27 +372,8 @@ where
         record_buf: &mut RecordBuffer,
         start: usize,
     ) -> Option<Result<(Range<usize>, usize)>> {
-        let start = Self::trim_start(&record_buf, start);
-        self.parse_field_rtrim(record_buf, start)
-    }
-
-    // Negligible improvement from inlining.
-    #[inline]
-    fn trim_start(record_buf: &RecordBuffer, start: usize) -> usize {
-        let buf_segment = &record_buf.as_str()[start..];
-        let trimmed = buf_segment.trim_start().as_bytes();
-        let len_trimmed = record_buf.len() - start - trimmed.len();
-        start + len_trimmed
-    }
-
-    // Negligible improvement from inlining.
-    #[inline]
-    fn trim_end(record_buf: &RecordBuffer, field_bounds: Range<usize>) -> Range<usize> {
-        let buf_segment = &record_buf.as_str()[field_bounds.clone()];
-        let trimmed = buf_segment.trim_end().as_bytes();
-        let len_trimmed = field_bounds.end - field_bounds.start - trimmed.len();
-        let end = field_bounds.end - len_trimmed;
-        field_bounds.start..end
+        let start = parse_field!(trim_start, record_buf, start);
+        parse_field!(right, self, record_buf, start)
     }
 }
 
