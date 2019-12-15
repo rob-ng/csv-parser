@@ -29,6 +29,7 @@ impl<'a> Record {
 
 #[derive(Clone)]
 pub(crate) struct Config {
+    pub(crate) escape: u8,
     pub(crate) columns: Option<Vec<String>>,
     pub(crate) max_record_size: usize,
     pub(crate) newline: Vec<u8>,
@@ -46,6 +47,7 @@ pub(crate) struct Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
+            escape: b'"',
             columns: None,
             max_record_size: 4096,
             newline: vec![b'\n'],
@@ -196,15 +198,20 @@ where
                 };
             }
 
-            if record_buf.get_unchecked(end) == self.config.quote {
-                let next_index = end + 1;
+            let curr = record_buf.get_unchecked(end);
+            let next_index = end + 1;
+
+            if curr == self.config.escape {
                 match record_buf.get(next_index) {
                     Some(&c) if c == self.config.quote => {
-                        // Remove duplicate leaving only escaped quote in buffer.
-                        record_buf.remove(next_index);
+                        // Remove escape character from buffer leaving only escaped value.
+                        record_buf.remove(end);
                     }
-                    _ => return Ok((start..end, next_index)),
+                    _ if curr == self.config.quote => return Ok((start..end, next_index)),
+                    _ => (),
                 }
+            } else if curr == self.config.quote {
+                return Ok((start..end, next_index));
             }
 
             end += 1

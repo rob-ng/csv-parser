@@ -33,6 +33,9 @@ impl Parser {
         }
     }
 
+    /// Sets the escape character to the given byte.
+    config!(escape, escape, u8);
+
     /// Sets maximum record size. Records longer than this value will result in an error.
     config!(max_record_size, max_record_size, usize);
 
@@ -131,6 +134,21 @@ describe!(parser_tests, {
     }
 
     describe!(configuration, {
+        describe!(escape, {
+            use crate::parser_tests::*;
+            it!(should_change_escape_character_used_for_nested_quotes, {
+                let tests = [(
+                    "\"a,b,c\\\"d,e,f\\\"g,h,i\"",
+                    vec![vec!["a,b,c\"d,e,f\"g,h,i"]],
+                    "Setting `escape` should change escape character used with inner quotes",
+                )];
+                println!("{}", tests[0].0);
+                let mut parser = Parser::new();
+                parser.separator(b',').quote(b'"').escape(b'\\');
+                run_tests_pass(parser, &tests);
+            });
+        });
+
         describe!(max_record_size, {
             use crate::parser_tests::*;
             it!(
