@@ -225,21 +225,21 @@ where
         record_buf: &mut RecordBuffer,
         start: usize,
     ) -> Result<(Range<usize>, usize)> {
+        // Using while-loop here is faster than iteration in benchmarks. Probably has to due with overhead of creating iterators for each record.
         let mut end = start;
-
         while end < record_buf.len_sans_newline() {
             match record_buf.get_unchecked(end) {
-                c if c == self.config.quote => {
+                byte if byte == self.config.separator => return Ok((start..end, end)),
+                byte if byte == self.config.quote => {
                     return Err(ErrorKind::BadField {
                         col: end,
                         msg: format!(
                             "Unquoted fields cannot contain quote character: `{}`",
                             self.config.quote
                         ),
-                    });
+                    })
                 }
-                c if c != self.config.separator => end += 1,
-                _ => break,
+                _ => end += 1,
             }
         }
 
@@ -293,17 +293,13 @@ where
         if first_byte == &self.config.quote {
             Some(self.quote(record_buf, start).and_then(
                 |(bounds, end)| match record_buf.get(end) {
-                    Some(&c)
-                        if c != self.config.separator && end < record_buf.len_sans_newline() =>
-                    {
-                        return Err(ErrorKind::BadField {
-                            col: end,
-                            msg: String::from(
-                                "Quoted fields cannot contain trailing unquoted values",
-                            ),
-                        });
-                    }
-                    _ => Ok((bounds, end)),
+                    Some(&c) if c == self.config.separator => Ok((bounds, end)),
+                    Some(&_c) if end >= record_buf.len_sans_newline() => Ok((bounds, end)),
+                    None => Ok((bounds, end)),
+                    _ => Err(ErrorKind::BadField {
+                        col: end,
+                        msg: String::from("Quoted fields cannot contain trailing unquoted values"),
+                    }),
                 },
             ))
         } else {
@@ -327,27 +323,25 @@ where
     ) -> Option<Result<(Range<usize>, usize)>> {
         let first_byte = record_buf.get(start)?;
         if first_byte == &self.config.quote {
-            Some(
-                self.quote(record_buf, start)
-                    .map(|(bounds, end)| {
-                        let end = Self::trim_start(record_buf, end);
-                        (bounds, end)
-                    })
-                    .and_then(|(bounds, end)| match record_buf.get(end) {
-                        Some(&c)
-                            if c != self.config.separator
-                                && end < record_buf.len_sans_newline() =>
-                        {
-                            return Err(ErrorKind::BadField {
-                                col: end,
-                                msg: String::from(
-                                    "Quoted fields cannot contain trailing unquoted values",
-                                ),
-                            });
-                        }
-                        _ => Ok((bounds, end)),
+            let quote = self.quote(record_buf, start);
+            Some(quote.and_then(|(bounds, end)| {
+                match record_buf.get(end) {
+                    Some(&c) if c == self.config.separator => return Ok((bounds, end)),
+                    Some(&_c) if end >= record_buf.len_sans_newline() => return Ok((bounds, end)),
+                    None => return Ok((bounds, end)),
+                    _ => (),
+                };
+                let end = Self::trim_start(record_buf, end);
+                match record_buf.get(end) {
+                    Some(&c) if c == self.config.separator => return Ok((bounds, end)),
+                    Some(&_c) if end >= record_buf.len_sans_newline() => return Ok((bounds, end)),
+                    None => return Ok((bounds, end)),
+                    _ => Err(ErrorKind::BadField {
+                        col: end,
+                        msg: String::from("Quoted fields cannot contain trailing unquoted values"),
                     }),
-            )
+                }
+            }))
         } else {
             Some(self.text(record_buf, start).map(|(bounds, end)| {
                 let bounds = Self::trim_end(&record_buf, bounds);
