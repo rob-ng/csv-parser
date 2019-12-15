@@ -1,12 +1,17 @@
-use burntcsv::Reader;
+use burntcsv::{ReaderBuilder, Trim};
 use criterion::{criterion_group, criterion_main, Criterion};
 use std::fs::File;
 
 pub fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("fib 20", |b| {
         b.iter(|| {
-            let csv = File::open("./large.csv").unwrap();
-            let mut rdr = Reader::from_reader(std::io::BufReader::new(csv));
+            let csv = File::open("./test.csv").unwrap();
+            let mut rdr = ReaderBuilder::new();
+            let mut rdr = rdr
+                .trim(Trim::All)
+                .has_headers(true)
+                .flexible(true)
+                .from_reader(std::io::BufReader::new(csv));
             for _result in rdr.records() {}
         })
     });

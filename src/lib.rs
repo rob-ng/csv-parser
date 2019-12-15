@@ -21,6 +21,7 @@ macro_rules! config {
     };
 }
 
+#[derive(Default)]
 pub struct Parser {
     config: Config,
 }
@@ -333,8 +334,8 @@ describe!(parser_tests, {
                                 )),
                                 BadReader::InvalidUtf8 => {
                                     // some invalid bytes, in a vector
-                                    let mut bytes = vec![0, 159, 146, 150];
-                                    buf[0..bytes.len()].copy_from_slice(&mut bytes);
+                                    let bytes = vec![0, 159, 146, 150];
+                                    buf[0..bytes.len()].copy_from_slice(&bytes);
                                     Ok(bytes.len())
                                 }
                                 BadReader::None => Ok(0),
@@ -363,7 +364,6 @@ describe!(parser_tests, {
                         verify_all!(tests.iter().map(|&(given, reason)| {
                             let found: std::result::Result<Vec<Record>, Error> =
                                 parser.records(given).collect();
-                            let reason = format!("{}", reason);
                             that!(found).will_be_err().because(&reason)
                         }));
                     });

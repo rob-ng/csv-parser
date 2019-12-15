@@ -62,6 +62,22 @@ impl Default for Config {
     }
 }
 
+type OnReadLine<R> = fn(
+    line_reader: &mut CsvReader<R>,
+    curr_line_read: Option<Result<RecordBuffer>>,
+) -> Option<Result<RecordBuffer>>;
+
+type OnRecord = fn(
+    curr_record: Option<Result<Record>>,
+    columns: &mut Option<Vec<String>>,
+) -> Option<Result<Record>>;
+
+type FieldParser<Slf> = fn(
+    &mut Slf,
+    record_buf: &mut RecordBuffer,
+    start: usize,
+) -> Option<Result<(Range<usize>, usize)>>;
+
 /// Iterator over CSV records.
 pub struct Records<R> {
     /// CSV line reader.
@@ -71,25 +87,11 @@ pub struct Records<R> {
     /// Configuration settings.
     config: Config,
     /// Callback(s) to perform after a line is read.
-    on_read_line: Vec<
-        fn(
-            line_reader: &mut CsvReader<R>,
-            curr_line_read: Option<Result<RecordBuffer>>,
-        ) -> Option<Result<RecordBuffer>>,
-    >,
+    on_read_line: Vec<OnReadLine<R>>,
     /// Callback(s) to perform after a record is created but before it is returned.
-    on_record: Vec<
-        fn(
-            curr_record: Option<Result<Record>>,
-            columns: &mut Option<Vec<String>>,
-        ) -> Option<Result<Record>>,
-    >,
+    on_record: Vec<OnRecord>,
     /// Method for parsing fields.
-    parse_field: fn(
-        &mut Self,
-        record_buf: &mut RecordBuffer,
-        start: usize,
-    ) -> Option<Result<(Range<usize>, usize)>>,
+    parse_field: FieldParser<Self>,
 }
 
 impl<R> Records<R>
@@ -100,9 +102,7 @@ where
         let csv_reader = CsvReader::new(csv, &config.newline, config.max_record_size);
 
         let on_read_line = {
-            let mut on_read_line: Vec<
-                fn(&mut CsvReader<R>, Option<Result<RecordBuffer>>) -> Option<Result<RecordBuffer>>,
-            > = vec![];
+            let mut on_read_line: Vec<OnReadLine<R>> = vec![];
             if config.should_skip_empty_rows {
                 on_read_line.push(Self::on_read_line_skip_empty_lines);
             }
@@ -110,21 +110,17 @@ where
         };
 
         let on_record = {
-            let mut on_record: Vec<
-                fn(
-                    curr_record: Option<Result<Record>>,
-                    columns: &mut Option<Vec<String>>,
-                ) -> Option<Result<Record>>,
-            > = vec![];
+            let mut on_record: Vec<OnRecord> = vec![];
             if config.should_relax_column_count_less {
                 on_record.push(Self::on_record_relax_columns_less);
             };
             if config.should_relax_column_count_more {
                 on_record.push(Self::on_record_relax_columns_more);
             };
-            on_record.push(match config.should_detect_columns {
-                true => Self::on_record_detect_columns,
-                false => Self::on_record_index_columns,
+            on_record.push(if config.should_detect_columns {
+                Self::on_record_detect_columns
+            } else {
+                Self::on_record_index_columns
             });
             if config.should_skip_rows_with_error {
                 on_record.push(Self::on_record_skip_malformed);
@@ -142,7 +138,7 @@ where
         Records {
             csv_reader,
             columns: config.columns.clone(),
-            config: config,
+            config,
             on_read_line,
             on_record,
             parse_field,
@@ -600,7 +596,7 @@ where
                 .read_until(*last, buf)
             {
                 Ok(0) => {
-                    if buf.len() == 0 {
+                    if buf.is_empty() {
                         return None;
                     } else {
                         break 0;

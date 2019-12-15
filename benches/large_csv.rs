@@ -5,7 +5,7 @@ use std::fs::File;
 pub fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("fib 20", |b| {
         b.iter(|| {
-            let csv = File::open("./large.csv").unwrap();
+            let csv = File::open("./test.csv").unwrap();
             let mut parser = Parser::new();
             parser
                 .trim(true)
