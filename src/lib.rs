@@ -36,14 +36,17 @@ impl Parser {
     /// Sets maximum record size. Records longer than this value will result in an error.
     config!(max_record_size, max_record_size, usize);
 
+    /// Sets newline terminator to given bytes.
+    pub fn newline(&mut self, newline: &[u8]) -> &mut Self {
+        self.config.newline = newline.to_vec();
+        self
+    }
+
     /// Sets field separator to given byte.
     config!(separator, separator, u8);
 
     /// Sets quote marker to given byte.
     config!(quote, quote, u8);
-
-    /// Sets newline terminator to given bytes.
-    config!(newline, newline, Vec<u8>);
 
     /// Determines whether fields should be left-trimmed of whitespace.
     config!(ltrim, should_ltrim_fields);
@@ -289,10 +292,7 @@ describe!(parser_tests, {
                     "Should work when newline is '\\r\\n'",
                 )];
                 let mut parser = Parser::new();
-                parser
-                    .separator(b',')
-                    .quote(b'"')
-                    .newline(b"NEWLINE".to_vec());
+                parser.separator(b',').quote(b'"').newline(b"NEWLINE");
                 run_tests_pass(parser, &tests);
             });
         });
