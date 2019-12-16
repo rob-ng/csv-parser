@@ -21,6 +21,7 @@ macro_rules! config {
     };
 }
 
+/// A CSV parser.
 #[derive(Default)]
 pub struct Parser {
     config: Config,
@@ -134,6 +135,24 @@ describe!(parser_tests, {
     }
 
     describe!(configuration, {
+        describe!(separator, {
+            use crate::parser_tests::*;
+            it!(should_change_separator_character, {
+                let tests = [(
+                    "a b c\nd e f\ng h i",
+                    vec![
+                        vec!["a", "b", "c"],
+                        vec!["d", "e", "f"],
+                        vec!["g", "h", "i"],
+                    ],
+                    "Setting `separator` should change field separator",
+                )];
+                let mut parser = Parser::new();
+                parser.separator(b' ');
+                run_tests_pass(parser, &tests);
+            });
+        });
+
         describe!(escape, {
             use crate::parser_tests::*;
             it!(should_change_escape_character_used_for_nested_quotes, {
@@ -142,7 +161,6 @@ describe!(parser_tests, {
                     vec![vec!["a,b,c\"d,e,f\"g,h,i"]],
                     "Setting `escape` should change escape character used with inner quotes",
                 )];
-                println!("{}", tests[0].0);
                 let mut parser = Parser::new();
                 parser.separator(b',').quote(b'"').escape(b'\\');
                 run_tests_pass(parser, &tests);
@@ -677,6 +695,14 @@ describe!(parser_tests, {
                     ",,,\na,b,c,d",
                     vec![vec!["", "", "", ""], vec!["a", "b", "c", "d"]],
                     "Should allow empty fields",
+                ),
+                (
+                    "这是一个,\"例子\"\"。\n\"\"它\",由多个\n句子,组成,。",
+                    vec![
+                        vec!["这是一个", "例子\"。\n\"它", "由多个"],
+                        vec!["句子", "组成", "。"],
+                    ],
+                    "Should work with non-ascii strings",
                 ),
             ];
             let mut parser = Parser::new();
