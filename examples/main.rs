@@ -3,7 +3,7 @@ use std::fs::File;
 
 fn main() {
     let csv = File::open("./test.csv").unwrap();
-    let mut parser = Parser::new();
+    let mut parser = ParserBuilder::new();
     parser
         .trim(true)
         .detect_columns(true)

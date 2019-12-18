@@ -6,7 +6,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("fib 20", |b| {
         b.iter(|| {
             let csv = File::open("./test.csv").unwrap();
-            let mut parser = Parser::new();
+            let mut parser = ParserBuilder::new();
             parser
                 .trim(true)
                 .detect_columns(true)

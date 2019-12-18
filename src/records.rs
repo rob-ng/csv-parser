@@ -2,6 +2,104 @@ use crate::error::{Error, ErrorKind};
 use std::io::{BufRead, BufReader, Read};
 use std::ops::Range;
 
+macro_rules! config {
+    ($name:ident, $field:ident) => {
+        pub fn $name(&mut self, value: bool) -> &mut Self {
+            self.config.$field = value;
+            self
+        }
+    };
+
+    ($name:ident, $field:ident, $value_type:ty) => {
+        pub fn $name(&mut self, value: $value_type) -> &mut Self {
+            self.config.$field = value;
+            self
+        }
+    };
+}
+
+/// A CSV parser.
+#[derive(Default)]
+pub struct ParserBuilder {
+    config: Config,
+}
+
+impl ParserBuilder {
+    pub fn new() -> Self {
+        Self {
+            config: Default::default(),
+        }
+    }
+
+    /// Sets the escape character to the given byte.
+    config!(escape, escape, u8);
+
+    /// Sets maximum record size. Records longer than this value will result in an error.
+    config!(max_record_size, max_record_size, usize);
+
+    /// Sets newline terminator to given bytes.
+    pub fn newline(&mut self, newline: &[u8]) -> &mut Self {
+        self.config.newline = newline.to_vec();
+        self
+    }
+
+    /// Sets field separator to given byte.
+    config!(separator, separator, u8);
+
+    /// Sets quote marker to given byte.
+    config!(quote, quote, u8);
+
+    /// Determines whether fields should be left-trimmed of whitespace.
+    config!(ltrim, should_ltrim_fields);
+
+    /// Determines whether fields should be right-trimmed of whitespace.
+    config!(rtrim, should_rtrim_fields);
+
+    /// Determines whether fields should be left *and* right trimmed of whitespace.
+    pub fn trim(&mut self, should_trim: bool) -> &mut Self {
+        self.config.should_ltrim_fields = should_trim;
+        self.config.should_rtrim_fields = should_trim;
+        self
+    }
+
+    /// Determines whether first row should be treated as column names for subsequent rows.
+    config!(detect_columns, should_detect_columns);
+
+    /// Sets column names for rows to given values. Overrides `detect_columns`.
+    pub fn columns(&mut self, columns: Vec<String>) -> &mut Self {
+        self.config.columns.replace(columns);
+        self
+    }
+
+    /// Determines whether records should be allowed to have fewer fields than the number of columns.
+    config!(relax_column_count_less, should_relax_column_count_less);
+
+    /// Determines whether records should be allowed to have more fields than the number of columns.
+    config!(relax_column_count_more, should_relax_column_count_more);
+
+    /// Determines whether records should be allowed to have more *or* fewer fields than the number of columns.
+    pub fn relax_column_count(&mut self, should_relax: bool) -> &mut Self {
+        self.config.should_relax_column_count_less = should_relax;
+        self.config.should_relax_column_count_more = should_relax;
+        self
+    }
+
+    /// Determines whether rows of only whitespace should be skipped. Does not apply to rows in quoted fields.
+    config!(skip_empty_rows, should_skip_empty_rows);
+
+    /// Determines whether parsing errors from malformed CSV should be skipped. Other kinds of errors (e.g. IO) are not affected.
+    config!(skip_rows_with_error, should_skip_rows_with_error);
+
+    /// Returns an iterator of `Record`s from a readable source of CSV.
+    pub fn records<R>(&self, csv_source: R) -> Records<R>
+    where
+        R: Read,
+    {
+        let config = self.config.clone();
+        Records::new(csv_source, config)
+    }
+}
+
 type Result<T> = std::result::Result<T, ErrorKind>;
 
 /// Represents a CSV record.
@@ -29,20 +127,20 @@ impl<'a> Record {
 }
 
 #[derive(Clone)]
-pub(crate) struct Config {
-    pub(crate) escape: u8,
-    pub(crate) columns: Option<Vec<String>>,
-    pub(crate) max_record_size: usize,
-    pub(crate) newline: Vec<u8>,
-    pub(crate) quote: u8,
-    pub(crate) separator: u8,
-    pub(crate) should_detect_columns: bool,
-    pub(crate) should_ltrim_fields: bool,
-    pub(crate) should_rtrim_fields: bool,
-    pub(crate) should_relax_column_count_less: bool,
-    pub(crate) should_relax_column_count_more: bool,
-    pub(crate) should_skip_empty_rows: bool,
-    pub(crate) should_skip_rows_with_error: bool,
+struct Config {
+    escape: u8,
+    columns: Option<Vec<String>>,
+    max_record_size: usize,
+    newline: Vec<u8>,
+    quote: u8,
+    separator: u8,
+    should_detect_columns: bool,
+    should_ltrim_fields: bool,
+    should_rtrim_fields: bool,
+    should_relax_column_count_less: bool,
+    should_relax_column_count_more: bool,
+    should_skip_empty_rows: bool,
+    should_skip_rows_with_error: bool,
 }
 
 impl Default for Config {
@@ -75,7 +173,7 @@ type OnRecord = fn(
     columns: &mut Option<Vec<String>>,
 ) -> Option<Result<Record>>;
 
-type FieldParser<Slf> = fn(&mut Slf, start: usize) -> Option<Result<(Range<usize>, usize)>>;
+type FieldParserBuilder<Slf> = fn(&mut Slf, start: usize) -> Option<Result<(Range<usize>, usize)>>;
 
 /// Iterator over CSV records.
 pub struct Records<R> {
@@ -90,14 +188,14 @@ pub struct Records<R> {
     /// Callback(s) to perform after a record is created but before it is returned.
     on_record: Vec<OnRecord>,
     /// Method for parsing fields.
-    parse_field: FieldParser<Self>,
+    parse_field: FieldParserBuilder<Self>,
 }
 
 impl<R> Records<R>
 where
     R: Read,
 {
-    pub(crate) fn new(csv: R, config: Config) -> Self {
+    fn new(csv: R, config: Config) -> Self {
         let current_record_buffer = RecordBuffer::new(csv, &config.newline, config.max_record_size);
 
         let on_read_line = {
