@@ -1,7 +1,7 @@
 mod error;
-mod records;
+mod parser;
 pub use error::{Error, ErrorKind};
-pub use records::{ParserBuilder, Record, Records};
+pub use parser::{ParserBuilder, Record, Records};
 
 #[cfg(test)]
 use {jestr::*, std::io::Read};
