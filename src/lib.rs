@@ -1,7 +1,7 @@
 mod error;
 mod parser;
 pub use error::{Error, ErrorKind};
-pub use parser::{ParserBuilder, Record, Records};
+pub use parser::{Parser, ParserBuilder, Record, Records};
 
 #[cfg(test)]
 use {jestr::*, std::io::Read};
@@ -10,10 +10,12 @@ use {jestr::*, std::io::Read};
 describe!(reader_tests, {
     pub use super::*;
 
-    pub fn run_tests_pass(reader: ParserBuilder, tests: &[(&str, Vec<Vec<&str>>, &str)]) {
+    pub fn run_tests_pass(parser_builder: ParserBuilder, tests: &[(&str, Vec<Vec<&str>>, &str)]) {
         verify_all!(tests.iter().map(|(given, expected, reason)| {
-            let found: std::result::Result<Vec<Record>, Error> =
-                reader.records(given.as_bytes()).collect();
+            let found: std::result::Result<Vec<Record>, Error> = parser_builder
+                .from_reader(given.as_bytes())
+                .records()
+                .collect();
             let reason = format!("{}.\nGiven:\n{}", reason, given);
             match &found {
                 Ok(found) => {
@@ -25,10 +27,12 @@ describe!(reader_tests, {
         }));
     }
 
-    pub fn run_tests_fail(reader: ParserBuilder, tests: &[(&str, &str)]) {
+    pub fn run_tests_fail(parser_builder: ParserBuilder, tests: &[(&str, &str)]) {
         verify_all!(tests.iter().map(|(given, reason)| {
-            let found: std::result::Result<Vec<Record>, Error> =
-                reader.records(given.as_bytes()).collect();
+            let found: std::result::Result<Vec<Record>, Error> = parser_builder
+                .from_reader(given.as_bytes())
+                .records()
+                .collect();
             let reason = format!("{}.\nGiven:\n{}", reason, given);
             that!(found).will_be_err().because(&reason)
         }));
@@ -292,14 +296,14 @@ describe!(reader_tests, {
                                 "Turning on `skip_rows_with_error` should not skip UTF-8 errors",
                             ),
                         ];
-                        let mut reader = ParserBuilder::new();
-                        reader
+                        let mut parser_builder = ParserBuilder::new();
+                        parser_builder
                             .separator(b',')
                             .quote(b'"')
                             .skip_rows_with_error(true);
                         verify_all!(tests.iter().map(|&(given, reason)| {
                             let found: std::result::Result<Vec<Record>, Error> =
-                                reader.records(given).collect();
+                                parser_builder.from_reader(given).records().collect();
                             that!(found).will_be_err().because(&reason)
                         }));
                     });

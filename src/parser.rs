@@ -18,7 +18,7 @@ macro_rules! config {
     };
 }
 
-/// A CSV parser.
+/// Configures and creates `Parser`s.
 #[derive(Default)]
 pub struct ParserBuilder {
     config: Config,
@@ -34,7 +34,7 @@ impl ParserBuilder {
     /// Sets the escape character to the given byte.
     config!(escape, escape, u8);
 
-    /// Sets maximum record size. Records longer than this value will result in an error.
+    /// Sets maximum record size. Parser longer than this value will result in an error.
     config!(max_record_size, max_record_size, usize);
 
     /// Sets newline terminator to given bytes.
@@ -90,41 +90,17 @@ impl ParserBuilder {
     /// Determines whether parsing errors from malformed CSV should be skipped. Other kinds of errors (e.g. IO) are not affected.
     config!(skip_rows_with_error, should_skip_rows_with_error);
 
-    /// Returns an iterator of `Record`s from a readable source of CSV.
-    pub fn records<R>(&self, csv_source: R) -> Records<R>
+    /// Returns a `Parser` based on the given reader.
+    pub fn from_reader<R>(&self, csv_source: R) -> Parser<R>
     where
         R: Read,
     {
         let config = self.config.clone();
-        Records::new(csv_source, config)
+        Parser::new(csv_source, config)
     }
 }
 
 type Result<T> = std::result::Result<T, ErrorKind>;
-
-/// Represents a CSV record.
-#[derive(Debug)]
-pub struct Record {
-    /// Contents of the record.
-    buf: Vec<u8>,
-    /// Ranges describing locations of fields within `buf`.
-    field_bounds: Vec<Range<usize>>,
-}
-
-impl<'a> Record {
-    fn new(buf: Vec<u8>, field_bounds: Vec<Range<usize>>) -> Self {
-        Record { buf, field_bounds }
-    }
-
-    /// Returns record's fields as strings.
-    pub fn fields(&self) -> Vec<&str> {
-        let buf_as_str = unsafe { std::str::from_utf8_unchecked(&self.buf) };
-        self.field_bounds
-            .iter()
-            .map(|bounds| &buf_as_str[bounds.clone()])
-            .collect()
-    }
-}
 
 #[derive(Clone)]
 struct Config {
@@ -175,8 +151,8 @@ type OnRecord = fn(
 
 type FieldParserBuilder<Slf> = fn(&mut Slf, start: usize) -> Option<Result<(Range<usize>, usize)>>;
 
-/// Iterator over CSV records.
-pub struct Records<R> {
+/// CSV parser.
+pub struct Parser<R> {
     /// Buffer containing content of current record.
     current_record_buffer: RecordBuffer<R>,
     /// Column names, if any.
@@ -191,7 +167,7 @@ pub struct Records<R> {
     parse_field: FieldParserBuilder<Self>,
 }
 
-impl<R> Records<R>
+impl<R> Parser<R>
 where
     R: Read,
 {
@@ -232,7 +208,7 @@ where
             (true, true) => Self::parse_field_trim,
         };
 
-        Records {
+        Parser {
             current_record_buffer,
             columns: config.columns.clone(),
             config,
@@ -240,6 +216,10 @@ where
             on_record,
             parse_field,
         }
+    }
+
+    pub fn records(self) -> Records<R> {
+        Records::new(self)
     }
 
     fn record(&mut self) -> Option<Result<Record>> {
@@ -334,14 +314,8 @@ where
 
         Ok((start..end, end))
     }
-}
 
-impl<R> Iterator for Records<R>
-where
-    R: Read,
-{
-    type Item = std::result::Result<Record, Error>;
-    fn next(&mut self) -> Option<Self::Item> {
+    fn next_record(&mut self) -> Option<std::result::Result<Record, Error>> {
         let read_attempt = self.current_record_buffer.append_next_line();
         let current_record_buffer = &mut self.current_record_buffer;
         match self
@@ -366,9 +340,29 @@ where
             Some(Err(e)) => Some(Err(Error::new(self.current_record_buffer.line_count, e))),
             None => {
                 self.current_record_buffer.clear();
-                self.next()
+                self.next_record()
             }
         }
+    }
+}
+
+pub struct Records<R> {
+    parser: Parser<R>,
+}
+
+impl<R> Records<R> {
+    fn new(parser: Parser<R>) -> Self {
+        Self { parser }
+    }
+}
+
+impl<R> Iterator for Records<R>
+where
+    R: Read,
+{
+    type Item = std::result::Result<Record, Error>;
+    fn next(&mut self) -> Option<Self::Item> {
+        self.parser.next_record()
     }
 }
 
@@ -438,7 +432,7 @@ macro_rules! parse_field {
     }};
 }
 
-impl<R> Records<R>
+impl<R> Parser<R>
 where
     R: Read,
 {
@@ -461,7 +455,7 @@ where
     }
 }
 
-impl<R> Records<R>
+impl<R> Parser<R>
 where
     R: Read,
 {
@@ -547,7 +541,7 @@ where
     }
 }
 
-impl<R> Records<R>
+impl<R> Parser<R>
 where
     R: Read,
 {
@@ -566,6 +560,30 @@ where
             }
         }
         curr_read_attempt
+    }
+}
+
+/// Represents a CSV record.
+#[derive(Debug)]
+pub struct Record {
+    /// Contents of the record.
+    buf: Vec<u8>,
+    /// Ranges describing locations of fields within `buf`.
+    field_bounds: Vec<Range<usize>>,
+}
+
+impl<'a> Record {
+    fn new(buf: Vec<u8>, field_bounds: Vec<Range<usize>>) -> Self {
+        Record { buf, field_bounds }
+    }
+
+    /// Returns record's fields as strings.
+    pub fn fields(&self) -> Vec<&str> {
+        let buf_as_str = unsafe { std::str::from_utf8_unchecked(&self.buf) };
+        self.field_bounds
+            .iter()
+            .map(|bounds| &buf_as_str[bounds.clone()])
+            .collect()
     }
 }
 
