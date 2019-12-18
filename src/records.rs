@@ -8,21 +8,22 @@ type Result<T> = std::result::Result<T, ErrorKind>;
 #[derive(Debug)]
 pub struct Record {
     /// Contents of the record.
-    buf: RecordBuffer,
+    buf: Vec<u8>,
     /// Ranges describing locations of fields within `buf`.
     field_bounds: Vec<Range<usize>>,
 }
 
 impl<'a> Record {
-    fn new(buf: RecordBuffer, field_bounds: Vec<Range<usize>>) -> Self {
+    fn new(buf: Vec<u8>, field_bounds: Vec<Range<usize>>) -> Self {
         Record { buf, field_bounds }
     }
 
     /// Returns record's fields as strings.
     pub fn fields(&self) -> Vec<&str> {
+        let buf_as_str = unsafe { std::str::from_utf8_unchecked(&self.buf) };
         self.field_bounds
             .iter()
-            .map(|bounds| &self.buf.as_str()[bounds.clone()])
+            .map(|bounds| &buf_as_str[bounds.clone()])
             .collect()
     }
 }
@@ -65,25 +66,21 @@ impl Default for Config {
 }
 
 type OnReadLine<R> = fn(
-    line_reader: &mut CsvReader<R>,
-    curr_line_read: Option<Result<RecordBuffer>>,
-) -> Option<Result<RecordBuffer>>;
+    current_record_buffer: &mut RecordBuffer<R>,
+    last_read_attempt: Option<Result<usize>>,
+) -> Option<Result<usize>>;
 
 type OnRecord = fn(
     curr_record: Option<Result<Record>>,
     columns: &mut Option<Vec<String>>,
 ) -> Option<Result<Record>>;
 
-type FieldParser<Slf> = fn(
-    &mut Slf,
-    record_buf: &mut RecordBuffer,
-    start: usize,
-) -> Option<Result<(Range<usize>, usize)>>;
+type FieldParser<Slf> = fn(&mut Slf, start: usize) -> Option<Result<(Range<usize>, usize)>>;
 
 /// Iterator over CSV records.
 pub struct Records<R> {
-    /// CSV line reader.
-    csv_reader: CsvReader<R>,
+    /// Buffer containing content of current record.
+    current_record_buffer: RecordBuffer<R>,
     /// Column names, if any.
     columns: Option<Vec<String>>,
     /// Configuration settings.
@@ -101,7 +98,7 @@ where
     R: Read,
 {
     pub(crate) fn new(csv: R, config: Config) -> Self {
-        let csv_reader = CsvReader::new(csv, &config.newline, config.max_record_size);
+        let current_record_buffer = RecordBuffer::new(csv, &config.newline, config.max_record_size);
 
         let on_read_line = {
             let mut on_read_line: Vec<OnReadLine<R>> = vec![];
@@ -138,7 +135,7 @@ where
         };
 
         Records {
-            csv_reader,
+            current_record_buffer,
             columns: config.columns.clone(),
             config,
             on_read_line,
@@ -147,13 +144,13 @@ where
         }
     }
 
-    fn record(&mut self, mut record_buf: RecordBuffer) -> Option<Result<Record>> {
+    fn record(&mut self) -> Option<Result<Record>> {
         let expected_num_fields = self.columns.as_ref().map_or(1, |cols| cols.len());
         let mut field_bounds = Vec::with_capacity(expected_num_fields);
 
         let mut start = 0;
         loop {
-            let (bounds, end) = match (self.parse_field)(self, &mut record_buf, start) {
+            let (bounds, end) = match (self.parse_field)(self, start) {
                 Some(Ok(result)) => result,
                 Some(Err(e)) => return Some(Err(e)),
                 None => break,
@@ -162,41 +159,37 @@ where
             start = end;
             field_bounds.push(bounds);
 
-            match record_buf.get(start) {
-                Some(&c) if c == self.config.separator => {
-                    start += 1;
-                    continue;
-                }
-                Some(&_c) if start == record_buf.len_sans_newline() => break,
-                Some(&_c) => unreachable!(),
-                None => break,
+            if start >= self.current_record_buffer.len_sans_newline() {
+                break;
+            }
+
+            match self.current_record_buffer.get_unchecked(start) {
+                c if c == self.config.separator => start += 1,
+                _c => unreachable!(),
             }
         }
 
+        let record_buf = self.current_record_buffer.take_inner();
         let record = Record::new(record_buf, field_bounds);
 
         Some(Ok(record))
     }
 
-    fn quote(
-        &mut self,
-        record_buf: &mut RecordBuffer,
-        start: usize,
-    ) -> Result<(Range<usize>, usize)> {
+    fn quote(&mut self, start: usize) -> Result<(Range<usize>, usize)> {
         // Start at first byte after quotation byte.
         let start = start + 1;
 
         let mut end = start;
         loop {
-            while end < record_buf.len_sans_newline() {
-                let curr = record_buf.get_unchecked(end);
+            while end < self.current_record_buffer.len_sans_newline() {
+                let curr = self.current_record_buffer.get_unchecked(end);
                 let next_index = end + 1;
 
                 if curr == self.config.escape {
-                    match record_buf.get(next_index) {
+                    match self.current_record_buffer.get(next_index) {
                         Some(&c) if c == self.config.quote => {
                             // Remove escape character from buffer leaving only escaped value.
-                            record_buf.remove(end);
+                            self.current_record_buffer.remove(end);
                         }
                         _ if curr == self.config.quote => return Ok((start..end, next_index)),
                         _ => (),
@@ -207,9 +200,9 @@ where
 
                 end += 1
             }
-            let old_buf_len = record_buf.len();
-            match record_buf.append_line(&mut self.csv_reader) {
-                Some(Ok(())) => end = old_buf_len,
+            let old_buf_len = self.current_record_buffer.len();
+            match self.current_record_buffer.append_next_line() {
+                Some(Ok(_nread)) => end = old_buf_len,
                 Some(Err(e)) => return Err(e),
                 None => {
                     return Err(ErrorKind::BadField {
@@ -221,16 +214,12 @@ where
         }
     }
 
-    fn text(
-        &mut self,
-        record_buf: &mut RecordBuffer,
-        start: usize,
-    ) -> Result<(Range<usize>, usize)> {
+    fn text(&mut self, start: usize) -> Result<(Range<usize>, usize)> {
         // Using while-loop here is faster than iteration in benchmarks. Probably has to due with overhead of creating iterators for each record.
         let mut end = start;
-        let max = record_buf.len_sans_newline();
+        let max = self.current_record_buffer.len_sans_newline();
         while end < max {
-            match record_buf.get_unchecked(end) {
+            match self.current_record_buffer.get_unchecked(end) {
                 byte if byte == self.config.separator => return Ok((start..end, end)),
                 byte if byte == self.config.quote => {
                     return Err(ErrorKind::BadField {
@@ -255,20 +244,20 @@ where
 {
     type Item = std::result::Result<Record, Error>;
     fn next(&mut self) -> Option<Self::Item> {
-        let next_record_buf = RecordBuffer::new(&mut self.csv_reader);
-        let line_reader = &mut self.csv_reader;
-        let record_buf = match self
+        let read_attempt = self.current_record_buffer.append_next_line();
+        let current_record_buffer = &mut self.current_record_buffer;
+        match self
             .on_read_line
             .iter()
-            .fold(next_record_buf, |line, on_read_line| {
-                on_read_line(line_reader, line)
+            .fold(read_attempt, |line, on_read_line| {
+                on_read_line(current_record_buffer, line)
             }) {
             Some(Ok(buf)) => buf,
-            Some(Err(e)) => return Some(Err(Error::new(self.csv_reader.line_count, e))),
+            Some(Err(e)) => return Some(Err(Error::new(self.current_record_buffer.line_count, e))),
             None => return None,
         };
 
-        let next_record = self.record(record_buf);
+        let next_record = self.record();
         let columns = &mut self.columns;
         match self
             .on_record
@@ -276,20 +265,24 @@ where
             .fold(next_record, |record, on_record| on_record(record, columns))
         {
             Some(Ok(record)) => Some(Ok(record)),
-            Some(Err(e)) => Some(Err(Error::new(self.csv_reader.line_count, e))),
-            None => self.next(),
+            Some(Err(e)) => Some(Err(Error::new(self.current_record_buffer.line_count, e))),
+            None => {
+                self.current_record_buffer.clear();
+                self.next()
+            }
         }
     }
 }
 
 macro_rules! parse_field {
-    (left, $self:expr, $record_buf:expr, $start:expr) => {{
-        let first_byte = $record_buf.get($start)?;
+    (left, $self:expr, $start:expr) => {{
+        let first_byte = $self.current_record_buffer.get($start)?;
         if first_byte == &$self.config.quote {
-            Some($self.quote($record_buf, $start).and_then(|(bounds, end)| {
-                match $record_buf.get(end) {
+            Some($self.quote($start).and_then(|(bounds, end)| {
+                match $self.current_record_buffer.get(end) {
                     Some(&c)
-                        if c == $self.config.separator || end >= $record_buf.len_sans_newline() =>
+                        if c == $self.config.separator
+                            || end >= $self.current_record_buffer.len_sans_newline() =>
                     {
                         Ok((bounds, end))
                     }
@@ -301,42 +294,38 @@ macro_rules! parse_field {
                 }
             }))
         } else {
-            Some($self.text($record_buf, $start))
+            Some($self.text($start))
         }
     }};
 
-    (right, $self:expr, $record_buf:expr, $start:expr) => {{
-        let first_byte = $record_buf.get($start)?;
+    (right, $self:expr, $start:expr) => {{
+        let first_byte = $self.current_record_buffer.get($start)?;
         if first_byte == &$self.config.quote {
-            Some(
-                $self
-                    .quote($record_buf, $start)
-                    .and_then(|(bounds, mut end)| {
-                        if let Some(&c) = $record_buf.get(end) {
-                            if c != $self.config.separator && end < $record_buf.len_sans_newline() {
-                                end = parse_field!(trim_start, $record_buf, end);
-                            }
-                        }
-                        match $record_buf.get(end) {
-                            Some(&c)
-                                if c == $self.config.separator
-                                    || end >= $record_buf.len_sans_newline() =>
-                            {
-                                return Ok((bounds, end))
-                            }
-                            None => return Ok((bounds, end)),
-                            _ => Err(ErrorKind::BadField {
-                                col: end,
-                                msg: String::from(
-                                    "Quoted fields cannot contain trailing unquoted values",
-                                ),
-                            }),
-                        }
+            Some($self.quote($start).and_then(|(bounds, mut end)| {
+                if let Some(&c) = $self.current_record_buffer.get(end) {
+                    if c != $self.config.separator
+                        && end < $self.current_record_buffer.len_sans_newline()
+                    {
+                        end = parse_field!(trim_start, $self, end);
+                    }
+                }
+                match $self.current_record_buffer.get(end) {
+                    Some(&c)
+                        if c == $self.config.separator
+                            || end >= $self.current_record_buffer.len_sans_newline() =>
+                    {
+                        return Ok((bounds, end))
+                    }
+                    None => return Ok((bounds, end)),
+                    _ => Err(ErrorKind::BadField {
+                        col: end,
+                        msg: String::from("Quoted fields cannot contain trailing unquoted values"),
                     }),
-            )
+                }
+            }))
         } else {
-            Some($self.text($record_buf, $start).map(|(mut bounds, end)| {
-                let buf_segment = &$record_buf.as_str()[bounds.clone()];
+            Some($self.text($start).map(|(mut bounds, end)| {
+                let buf_segment = &$self.current_record_buffer.as_str()[bounds.clone()];
                 let trimmed = buf_segment.trim_end().as_bytes();
                 bounds.end = bounds.start + trimmed.len();
                 (bounds, end)
@@ -344,10 +333,10 @@ macro_rules! parse_field {
         }
     }};
 
-    (trim_start, $record_buf:expr, $start:expr) => {{
-        let buf_segment = &$record_buf.as_str()[$start..];
+    (trim_start, $self:expr, $start:expr) => {{
+        let buf_segment = &$self.current_record_buffer.as_str()[$start..];
         let trimmed = buf_segment.trim_start().as_bytes();
-        $record_buf.len() - trimmed.len()
+        $self.current_record_buffer.len() - trimmed.len()
     }};
 }
 
@@ -355,38 +344,22 @@ impl<R> Records<R>
 where
     R: Read,
 {
-    fn parse_field(
-        &mut self,
-        record_buf: &mut RecordBuffer,
-        start: usize,
-    ) -> Option<Result<(Range<usize>, usize)>> {
-        parse_field!(left, self, record_buf, start)
+    fn parse_field(&mut self, start: usize) -> Option<Result<(Range<usize>, usize)>> {
+        parse_field!(left, self, start)
     }
 
-    fn parse_field_ltrim(
-        &mut self,
-        record_buf: &mut RecordBuffer,
-        start: usize,
-    ) -> Option<Result<(Range<usize>, usize)>> {
-        let start = parse_field!(trim_start, record_buf, start);
-        parse_field!(left, self, record_buf, start)
+    fn parse_field_ltrim(&mut self, start: usize) -> Option<Result<(Range<usize>, usize)>> {
+        let start = parse_field!(trim_start, self, start);
+        parse_field!(left, self, start)
     }
 
-    fn parse_field_rtrim(
-        &mut self,
-        record_buf: &mut RecordBuffer,
-        start: usize,
-    ) -> Option<Result<(Range<usize>, usize)>> {
-        parse_field!(right, self, record_buf, start)
+    fn parse_field_rtrim(&mut self, start: usize) -> Option<Result<(Range<usize>, usize)>> {
+        parse_field!(right, self, start)
     }
 
-    fn parse_field_trim(
-        &mut self,
-        record_buf: &mut RecordBuffer,
-        start: usize,
-    ) -> Option<Result<(Range<usize>, usize)>> {
-        let start = parse_field!(trim_start, record_buf, start);
-        parse_field!(right, self, record_buf, start)
+    fn parse_field_trim(&mut self, start: usize) -> Option<Result<(Range<usize>, usize)>> {
+        let start = parse_field!(trim_start, self, start);
+        parse_field!(right, self, start)
     }
 }
 
@@ -481,58 +454,98 @@ where
     R: Read,
 {
     fn on_read_line_skip_empty_lines(
-        reader: &mut CsvReader<R>,
-        record_buf: Option<Result<RecordBuffer>>,
-    ) -> Option<Result<RecordBuffer>> {
-        let mut curr_record_buf = record_buf;
-        while let Some(Ok(record_buf)) = &curr_record_buf {
-            let line = record_buf.as_str();
+        current_record_buffer: &mut RecordBuffer<R>,
+        last_read_attempt: Option<Result<usize>>,
+    ) -> Option<Result<usize>> {
+        let mut curr_read_attempt = last_read_attempt;
+        while let Some(Ok(_bytes_read)) = &curr_read_attempt {
+            let line = current_record_buffer.as_str();
             if line.trim().is_empty() {
-                curr_record_buf = RecordBuffer::new(reader);
+                current_record_buffer.clear();
+                curr_read_attempt = current_record_buffer.append_next_line();
             } else {
                 break;
             }
         }
-        curr_record_buf
+        curr_read_attempt
     }
 }
 
-#[derive(Debug)]
-struct RecordBuffer {
+struct RecordBuffer<R> {
     buf: Vec<u8>,
-    len_from_trailing_newline: usize,
+    len_trailing_newline: usize,
     line_count: usize,
+    max_record_size: usize,
+    newline: Vec<u8>,
+    reader: BufReader<R>,
 }
 
-impl RecordBuffer {
-    fn new<R: Read>(reader: &mut CsvReader<R>) -> Option<Result<Self>> {
-        let mut buf = Vec::with_capacity(reader.last_lines_capacity);
-        match reader.read_line(&mut buf) {
-            Some(Ok(len_from_trailing_newline)) => match std::str::from_utf8(&buf) {
-                Ok(_) => Some(Ok(RecordBuffer {
-                    buf,
-                    len_from_trailing_newline,
-                    line_count: 1,
-                })),
-                Err(e) => Some(Err(ErrorKind::Utf8(e))),
-            },
-            Some(Err(e)) => Some(Err(e)),
-            None => None,
+impl<R> RecordBuffer<R>
+where
+    R: Read,
+{
+    fn new(reader: R, newline: &[u8], max_record_size: usize) -> Self {
+        Self {
+            buf: vec![],
+            len_trailing_newline: 0,
+            line_count: 0,
+            max_record_size,
+            newline: newline.to_vec(),
+            reader: BufReader::new(reader),
         }
     }
 
-    fn append_line<R: Read>(&mut self, reader: &mut CsvReader<R>) -> Option<Result<()>> {
-        let initial_buf_len = self.buf.len();
-        match reader.read_line(&mut self.buf) {
-            Some(Ok(len_from_trailing_newline)) => {
-                self.len_from_trailing_newline = len_from_trailing_newline;
-                match std::str::from_utf8(&self.buf[initial_buf_len..]) {
-                    Ok(_) => Some(Ok(())),
-                    Err(e) => Some(Err(ErrorKind::Utf8(e))),
+    fn take_inner(&mut self) -> Vec<u8> {
+        let buf_capacity = self.buf.capacity();
+        std::mem::replace(&mut self.buf, Vec::with_capacity(buf_capacity))
+    }
+
+    fn append_next_line(&mut self) -> Option<Result<usize>> {
+        self.line_count += 1;
+        let last = self
+            .newline
+            .last()
+            .expect("Newline terminator cannot be empty");
+        let mut bytes_read = 0;
+        if self.buf.len() < self.max_record_size {
+            // We allow 1 more byte than the limit to indicate the limit has been eclipsed.
+            let read_limit = self.max_record_size - self.buf.len() + 1;
+            loop {
+                match self
+                    .reader
+                    .by_ref()
+                    .take(read_limit as u64)
+                    .read_until(*last, &mut self.buf)
+                {
+                    Ok(0) => {
+                        if bytes_read == 0 {
+                            return None;
+                        } else {
+                            self.len_trailing_newline = 0;
+                            break;
+                        }
+                    }
+                    Ok(n) => {
+                        if self.buf.ends_with(&self.newline) {
+                            self.len_trailing_newline = self.newline.len();
+                            break;
+                        } else {
+                            bytes_read += n;
+                            continue;
+                        }
+                    }
+                    Err(e) => return Some(Err(ErrorKind::Io(e))),
                 }
             }
-            Some(Err(e)) => Some(Err(e)),
-            None => None,
+        }
+        if self.buf.len() > self.max_record_size {
+            return Some(Err(ErrorKind::RecordTooLarge {
+                max_record_size: self.max_record_size,
+            }));
+        }
+        match std::str::from_utf8(&self.buf) {
+            Ok(_valid_utf8) => Some(Ok(bytes_read)),
+            Err(e) => Some(Err(ErrorKind::Utf8(e))),
         }
     }
 
@@ -561,7 +574,7 @@ impl RecordBuffer {
     // 20% improvement from inlining this. No idea why.
     #[inline]
     fn len_sans_newline(&self) -> usize {
-        self.buf.len() - self.len_from_trailing_newline
+        self.buf.len() - self.len_trailing_newline
     }
 
     // Negligible improvement from inlining this.
@@ -569,73 +582,10 @@ impl RecordBuffer {
     fn remove(&mut self, index: usize) {
         self.buf.remove(index);
     }
-}
 
-struct CsvReader<R> {
-    last_lines_capacity: usize,
-    line_count: usize,
-    max_record_size: usize,
-    newline: Vec<u8>,
-    reader: BufReader<R>,
-}
-
-impl<R> CsvReader<R>
-where
-    R: Read,
-{
-    fn new(reader: R, newline: &[u8], max_record_size: usize) -> Self {
-        CsvReader {
-            last_lines_capacity: 0,
-            line_count: 0,
-            max_record_size,
-            newline: newline.to_vec(),
-            reader: BufReader::new(reader),
-        }
-    }
-
-    fn read_line(&mut self, buf: &mut Vec<u8>) -> Option<Result<usize>> {
-        self.line_count += 1;
-        let last = self
-            .newline
-            .last()
-            .expect("Newline terminator cannot be empty");
-        // We allow 1 more byte than the limit to indicate the limit has been eclipsed.
-        let read_limit = if buf.len() > self.max_record_size {
-            0
-        } else {
-            self.max_record_size - buf.len() + 1
-        };
-        let mut bytes_read = 0;
-        let len_from_trailing_newline = loop {
-            match self
-                .reader
-                .by_ref()
-                .take(read_limit as u64)
-                .read_until(*last, buf)
-            {
-                Ok(0) => {
-                    if bytes_read == 0 {
-                        return None;
-                    } else {
-                        break 0;
-                    }
-                }
-                Ok(n) => {
-                    if buf.ends_with(&self.newline) {
-                        break self.newline.len();
-                    } else {
-                        bytes_read += n;
-                        continue;
-                    }
-                }
-                Err(e) => return Some(Err(ErrorKind::Io(e))),
-            }
-        };
-        if buf.len() >= read_limit {
-            return Some(Err(ErrorKind::RecordTooLarge {
-                max_record_size: self.max_record_size,
-            }));
-        }
-        Some(Ok(len_from_trailing_newline))
+    // Negligible improvement from inlining this.
+    #[inline]
+    fn clear(&mut self) {
+        self.buf.clear();
     }
 }
