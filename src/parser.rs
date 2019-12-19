@@ -1,6 +1,42 @@
-use crate::error::{Error, ErrorKind};
+use crate::{Error, ErrorKind, Record, Records};
 use std::io::{BufRead, BufReader, Read};
 use std::ops::Range;
+
+/// Configurer and creator of `Parser`s.
+#[derive(Default)]
+pub struct ParserBuilder {
+    config: Config,
+}
+
+type Result<T> = std::result::Result<T, ErrorKind>;
+
+type OnReadLine<R> = fn(
+    current_record_buffer: &mut RecordBuffer<R>,
+    last_read_attempt: Option<Result<usize>>,
+) -> Option<Result<usize>>;
+
+type OnRecord = fn(
+    curr_record: Option<Result<Record>>,
+    columns: &mut Option<Vec<String>>,
+) -> Option<Result<Record>>;
+
+type FieldParser<Parser> = fn(&mut Parser, start: usize) -> Option<Result<(Range<usize>, usize)>>;
+
+/// CSV parser.
+pub struct Parser<R> {
+    /// Buffer containing contents of current record.
+    current_record_buffer: RecordBuffer<R>,
+    /// Column names, if any.
+    columns: Option<Vec<String>>,
+    /// Configuration settings.
+    config: Config,
+    /// Callback(s) to perform after a line is read.
+    on_read_line: Vec<OnReadLine<R>>,
+    /// Callback(s) to perform after a record is created but before it is returned.
+    on_record: Vec<OnRecord>,
+    /// Method for parsing fields.
+    parse_field: FieldParser<Self>,
+}
 
 macro_rules! config {
     ($name:ident, $field:ident) => {
@@ -16,12 +52,6 @@ macro_rules! config {
             self
         }
     };
-}
-
-/// Configures and creates `Parser`s.
-#[derive(Default)]
-pub struct ParserBuilder {
-    config: Config,
 }
 
 impl ParserBuilder {
@@ -100,73 +130,6 @@ impl ParserBuilder {
     }
 }
 
-type Result<T> = std::result::Result<T, ErrorKind>;
-
-#[derive(Clone)]
-struct Config {
-    escape: u8,
-    columns: Option<Vec<String>>,
-    max_record_size: usize,
-    newline: Vec<u8>,
-    quote: u8,
-    separator: u8,
-    should_detect_columns: bool,
-    should_ltrim_fields: bool,
-    should_rtrim_fields: bool,
-    should_relax_column_count_less: bool,
-    should_relax_column_count_more: bool,
-    should_skip_empty_rows: bool,
-    should_skip_rows_with_error: bool,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Config {
-            escape: b'"',
-            columns: None,
-            max_record_size: 4096,
-            newline: vec![b'\n'],
-            quote: b'"',
-            separator: b',',
-            should_detect_columns: false,
-            should_ltrim_fields: true,
-            should_rtrim_fields: true,
-            should_relax_column_count_less: false,
-            should_relax_column_count_more: false,
-            should_skip_empty_rows: true,
-            should_skip_rows_with_error: false,
-        }
-    }
-}
-
-type OnReadLine<R> = fn(
-    current_record_buffer: &mut RecordBuffer<R>,
-    last_read_attempt: Option<Result<usize>>,
-) -> Option<Result<usize>>;
-
-type OnRecord = fn(
-    curr_record: Option<Result<Record>>,
-    columns: &mut Option<Vec<String>>,
-) -> Option<Result<Record>>;
-
-type FieldParserBuilder<Slf> = fn(&mut Slf, start: usize) -> Option<Result<(Range<usize>, usize)>>;
-
-/// CSV parser.
-pub struct Parser<R> {
-    /// Buffer containing content of current record.
-    current_record_buffer: RecordBuffer<R>,
-    /// Column names, if any.
-    columns: Option<Vec<String>>,
-    /// Configuration settings.
-    config: Config,
-    /// Callback(s) to perform after a line is read.
-    on_read_line: Vec<OnReadLine<R>>,
-    /// Callback(s) to perform after a record is created but before it is returned.
-    on_record: Vec<OnRecord>,
-    /// Method for parsing fields.
-    parse_field: FieldParserBuilder<Self>,
-}
-
 impl<R> Parser<R>
 where
     R: Read,
@@ -220,6 +183,36 @@ where
 
     pub fn records(self) -> Records<R> {
         Records::new(self)
+    }
+
+    pub(crate) fn next_record(&mut self) -> Option<std::result::Result<Record, Error>> {
+        let read_attempt = self.current_record_buffer.append_next_line();
+        let current_record_buffer = &mut self.current_record_buffer;
+        match self
+            .on_read_line
+            .iter()
+            .fold(read_attempt, |line, on_read_line| {
+                on_read_line(current_record_buffer, line)
+            }) {
+            Some(Ok(buf)) => buf,
+            Some(Err(e)) => return Some(Err(Error::new(self.current_record_buffer.line_count, e))),
+            None => return None,
+        };
+
+        let next_record = self.record();
+        let columns = &mut self.columns;
+        match self
+            .on_record
+            .iter()
+            .fold(next_record, |record, on_record| on_record(record, columns))
+        {
+            Some(Ok(record)) => Some(Ok(record)),
+            Some(Err(e)) => Some(Err(Error::new(self.current_record_buffer.line_count, e))),
+            None => {
+                self.current_record_buffer.clear();
+                self.next_record()
+            }
+        }
     }
 
     fn record(&mut self) -> Option<Result<Record>> {
@@ -313,56 +306,6 @@ where
         }
 
         Ok((start..end, end))
-    }
-
-    fn next_record(&mut self) -> Option<std::result::Result<Record, Error>> {
-        let read_attempt = self.current_record_buffer.append_next_line();
-        let current_record_buffer = &mut self.current_record_buffer;
-        match self
-            .on_read_line
-            .iter()
-            .fold(read_attempt, |line, on_read_line| {
-                on_read_line(current_record_buffer, line)
-            }) {
-            Some(Ok(buf)) => buf,
-            Some(Err(e)) => return Some(Err(Error::new(self.current_record_buffer.line_count, e))),
-            None => return None,
-        };
-
-        let next_record = self.record();
-        let columns = &mut self.columns;
-        match self
-            .on_record
-            .iter()
-            .fold(next_record, |record, on_record| on_record(record, columns))
-        {
-            Some(Ok(record)) => Some(Ok(record)),
-            Some(Err(e)) => Some(Err(Error::new(self.current_record_buffer.line_count, e))),
-            None => {
-                self.current_record_buffer.clear();
-                self.next_record()
-            }
-        }
-    }
-}
-
-pub struct Records<R> {
-    parser: Parser<R>,
-}
-
-impl<R> Records<R> {
-    fn new(parser: Parser<R>) -> Self {
-        Self { parser }
-    }
-}
-
-impl<R> Iterator for Records<R>
-where
-    R: Read,
-{
-    type Item = std::result::Result<Record, Error>;
-    fn next(&mut self) -> Option<Self::Item> {
-        self.parser.next_record()
     }
 }
 
@@ -563,28 +506,24 @@ where
     }
 }
 
-/// Represents a CSV record.
-#[derive(Debug)]
-pub struct Record {
-    /// Contents of the record.
-    buf: Vec<u8>,
-    /// Ranges describing locations of fields within `buf`.
-    field_bounds: Vec<Range<usize>>,
-}
-
-impl<'a> Record {
-    fn new(buf: Vec<u8>, field_bounds: Vec<Range<usize>>) -> Self {
-        Record { buf, field_bounds }
-    }
-
-    /// Returns record's fields as strings.
-    pub fn fields(&self) -> Vec<&str> {
-        let buf_as_str = unsafe { std::str::from_utf8_unchecked(&self.buf) };
-        self.field_bounds
-            .iter()
-            .map(|bounds| &buf_as_str[bounds.clone()])
-            .collect()
-    }
+///////////////////////////////////////////////////////////////////////////////
+/// Private
+///////////////////////////////////////////////////////////////////////////////
+#[derive(Clone)]
+struct Config {
+    columns: Option<Vec<String>>,
+    escape: u8,
+    max_record_size: usize,
+    newline: Vec<u8>,
+    quote: u8,
+    separator: u8,
+    should_detect_columns: bool,
+    should_ltrim_fields: bool,
+    should_rtrim_fields: bool,
+    should_relax_column_count_less: bool,
+    should_relax_column_count_more: bool,
+    should_skip_empty_rows: bool,
+    should_skip_rows_with_error: bool,
 }
 
 struct RecordBuffer<R> {
@@ -594,6 +533,26 @@ struct RecordBuffer<R> {
     max_record_size: usize,
     newline: Vec<u8>,
     reader: BufReader<R>,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Config {
+            columns: None,
+            escape: b'"',
+            max_record_size: 4096,
+            newline: vec![b'\n'],
+            quote: b'"',
+            separator: b',',
+            should_detect_columns: false,
+            should_ltrim_fields: true,
+            should_rtrim_fields: true,
+            should_relax_column_count_less: false,
+            should_relax_column_count_more: false,
+            should_skip_empty_rows: true,
+            should_skip_rows_with_error: false,
+        }
+    }
 }
 
 impl<R> RecordBuffer<R>
