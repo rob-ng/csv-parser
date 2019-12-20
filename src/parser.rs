@@ -156,7 +156,7 @@ where
             on_record.push(if config.should_detect_columns {
                 Self::on_record_detect_columns
             } else {
-                Self::on_record_index_columns
+                Self::on_record_log_columns
             });
             if config.should_skip_rows_with_error {
                 on_record.push(Self::on_record_skip_malformed);
@@ -178,6 +178,23 @@ where
             on_read_line,
             on_record,
             parse_field,
+        }
+    }
+
+    pub fn headers(&mut self) -> std::result::Result<&[String], Error> {
+        if self.columns.is_none() {
+            return match self.next_record() {
+                Some(Ok(_bytes_read)) => match &self.columns {
+                    Some(cols) => Ok(cols),
+                    None => unreachable!(),
+                },
+                Some(Err(e)) => Err(e),
+                None => Ok(&[]),
+            };
+        }
+        match &self.columns {
+            Some(columns) => Ok(columns),
+            None => Ok(&[]),
         }
     }
 
@@ -428,25 +445,22 @@ where
         record
     }
 
-    fn on_record_index_columns(
+    fn on_record_log_columns(
         record: Option<Result<Record>>,
         columns: &mut Option<Vec<String>>,
     ) -> Option<Result<Record>> {
-        if let Some(Ok(record)) = record {
-            match columns {
-                Some(columns) if columns.len() == record.field_bounds.len() => Some(Ok(record)),
-                Some(columns) => Some(Err(ErrorKind::UnequalNumFields {
-                    expected_num: columns.len(),
-                    num: record.field_bounds.len(),
-                })),
-                None => {
-                    let standin_columns = vec![String::from(""); record.field_bounds.len()];
-                    columns.replace(standin_columns);
-                    Some(Ok(record))
-                }
+        match (&record, &columns) {
+            (Some(Ok(rec)), Some(cols)) if cols.len() == rec.field_bounds.len() => record,
+            (Some(Ok(rec)), Some(cols)) => Some(Err(ErrorKind::UnequalNumFields {
+                expected_num: cols.len(),
+                num: rec.field_bounds.len(),
+            })),
+            (Some(Ok(rec)), None) => {
+                let found_columns = rec.fields().iter().map(|f| f.to_string()).collect();
+                columns.replace(found_columns);
+                record
             }
-        } else {
-            record
+            _ => record,
         }
     }
 
@@ -454,21 +468,18 @@ where
         record: Option<Result<Record>>,
         columns: &mut Option<Vec<String>>,
     ) -> Option<Result<Record>> {
-        if let Some(Ok(record)) = record {
-            match columns {
-                Some(columns) if columns.len() == record.field_bounds.len() => Some(Ok(record)),
-                Some(columns) => Some(Err(ErrorKind::UnequalNumFields {
-                    expected_num: columns.len(),
-                    num: record.field_bounds.len(),
-                })),
-                None => {
-                    let found_columns = record.fields().iter().map(|f| f.to_string()).collect();
-                    columns.replace(found_columns);
-                    None
-                }
+        match (&record, &columns) {
+            (Some(Ok(rec)), Some(cols)) if cols.len() == rec.field_bounds.len() => record,
+            (Some(Ok(rec)), Some(cols)) => Some(Err(ErrorKind::UnequalNumFields {
+                expected_num: cols.len(),
+                num: rec.field_bounds.len(),
+            })),
+            (Some(Ok(rec)), None) => {
+                let found_columns = rec.fields().iter().map(|f| f.to_string()).collect();
+                columns.replace(found_columns);
+                None
             }
-        } else {
-            record
+            _ => record,
         }
     }
 

@@ -9,7 +9,7 @@ pub use record::{Record, Records};
 use {jestr::*, std::io::Read};
 
 #[cfg(test)]
-describe!(reader_tests, {
+describe!(parser_tests, {
     pub use super::*;
 
     pub fn run_tests_pass(parser_builder: ParserBuilder, tests: &[(&str, Vec<Vec<&str>>, &str)]) {
@@ -40,9 +40,91 @@ describe!(reader_tests, {
         }));
     }
 
+    describe!(headers, {
+        describe!(when_parser_has_not_read_from_csv, {
+            use crate::parser_tests::*;
+            it!(should_read_first_row_from_csv_and_return_its_fields, {
+                let csv = "a,b,c\nd,e,f\n";
+                let mut parser = ParserBuilder::new().from_reader(csv.as_bytes());
+                let headers = parser.headers();
+                verify!(that!(headers).will_unwrap_to(&[
+                    "a".to_string(),
+                    "b".to_string(),
+                    "c".to_string()
+                ]));
+                let remaining_records: Vec<Record> = parser.records().map(|r| r.unwrap()).collect();
+                let remaining_records: Vec<Vec<&str>> =
+                    remaining_records.iter().map(|r| r.fields()).collect();
+                verify!(that!(remaining_records).will_equal(vec![vec!["d", "e", "f"]]));
+            });
+
+            describe!(and_reading_from_csv_returns_none, {
+                use crate::parser_tests::*;
+                use std::io::BufReader;
+
+                it!(should_return_empty_slice, {
+                    let mut reader = BufReader::new(b"".as_ref());
+                    let mut buf = vec![];
+                    // Empty reader.
+                    let _ = reader.read_to_end(&mut buf);
+                    let mut parser = ParserBuilder::new().from_reader(reader);
+                    let headers = parser.headers();
+                    verify!(that!(headers)
+                        .will_unwrap_to(&[])
+                        .because("should return an empty slice if reader is empty"));
+                });
+            });
+
+            describe!(and_reading_from_csv_returns_error, {
+                use crate::parser_tests::*;
+
+                struct ErrorReader {}
+                impl Read for ErrorReader {
+                    fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
+                        Err(std::io::Error::new(
+                            std::io::ErrorKind::UnexpectedEof,
+                            "error",
+                        ))
+                    }
+                }
+
+                it!(should_return_error, {
+                    let reader = ErrorReader {};
+                    // Empty reader.
+                    let mut parser = ParserBuilder::new().from_reader(reader);
+                    let headers = parser.headers();
+                    verify!(that!(headers)
+                        .will_be_err()
+                        .because("should return any errors caused by parsing the first record"));
+                });
+            });
+        });
+
+        describe!(when_parser_has_already_read_from_csv, {
+            use crate::parser_tests::*;
+
+            it!(should_return_fields_of_first_row_read, {
+                let csv = "a,b,c\nd,e,f\n";
+                let mut parser = ParserBuilder::new().from_reader(csv.as_bytes());
+                let _ = parser.headers();
+                // Second call should not perform additional reads.
+                let headers = parser.headers();
+                verify!(that!(headers).will_unwrap_to(&[
+                    "a".to_string(),
+                    "b".to_string(),
+                    "c".to_string()
+                ]));
+                let remaining_records: Vec<Record> = parser.records().map(|r| r.unwrap()).collect();
+                let remaining_records: Vec<Vec<&str>> =
+                    remaining_records.iter().map(|r| r.fields()).collect();
+                verify!(that!(remaining_records).will_equal(vec![vec!["d", "e", "f"]]));
+            });
+        });
+    });
+
     describe!(configuration, {
         describe!(separator, {
-            use crate::reader_tests::*;
+            use crate::parser_tests::*;
             it!(should_change_separator_character, {
                 let tests = [(
                     "a b c\nd e f\ng h i",
@@ -60,7 +142,7 @@ describe!(reader_tests, {
         });
 
         describe!(escape, {
-            use crate::reader_tests::*;
+            use crate::parser_tests::*;
             it!(should_change_escape_character_used_for_nested_quotes, {
                 let tests = [(
                     "\"a,b,c\\\"d,e,f\\\"g,h,i\"",
@@ -74,7 +156,7 @@ describe!(reader_tests, {
         });
 
         describe!(max_record_size, {
-            use crate::reader_tests::*;
+            use crate::parser_tests::*;
             it!(
                 should_prevent_the_reader_from_reading_more_than_n_bytes_per_record,
                 {
@@ -110,7 +192,7 @@ describe!(reader_tests, {
 
         describe!(relax_column_count, {
             describe!(when_on, {
-                use crate::reader_tests::*;
+                use crate::parser_tests::*;
                 it!(
                     should_allow_and_account_for_records_with_too_many_or_too_few_fields,
                     {
@@ -127,7 +209,7 @@ describe!(reader_tests, {
             });
 
             describe!(when_off, {
-                use crate::reader_tests::*;
+                use crate::parser_tests::*;
                 it!(
                     should_cause_records_with_too_many_fields_to_result_in_an_err,
                     {
@@ -145,7 +227,7 @@ describe!(reader_tests, {
 
         describe!(relax_column_count_more, {
             describe!(when_on, {
-                use crate::reader_tests::*;
+                use crate::parser_tests::*;
                 it!(should_allow_for_records_with_missing_fields_and_give_said_fields_default_values, {
                     let tests = [(
                         "a,b,c\nd,e,f,g\nh,i,j,k,l\n",
@@ -163,7 +245,7 @@ describe!(reader_tests, {
             });
 
             describe!(when_off, {
-                use crate::reader_tests::*;
+                use crate::parser_tests::*;
                 it!(
                     should_cause_records_with_too_many_fields_to_result_in_an_err,
                     {
@@ -184,7 +266,7 @@ describe!(reader_tests, {
 
         describe!(relax_column_count_less, {
             describe!(when_on, {
-                use crate::reader_tests::*;
+                use crate::parser_tests::*;
                 it!(should_allow_for_records_with_missing_fields_and_give_said_fields_default_values, {
                     let tests = [(
                         "a,b,c\nd,e\ng\n",
@@ -202,7 +284,7 @@ describe!(reader_tests, {
             });
 
             describe!(when_off, {
-                use crate::reader_tests::*;
+                use crate::parser_tests::*;
                 it!(
                     should_cause_records_with_too_few_fields_to_result_in_an_err,
                     {
@@ -222,7 +304,7 @@ describe!(reader_tests, {
         });
 
         describe!(newline, {
-            use crate::reader_tests::*;
+            use crate::parser_tests::*;
             it!(should_parse_csv_using_given_string_as_newline_terminator, {
                 let tests = [(
                     "a,b,cNEWLINEd,\"eNEWLINE\",fNEWLINEg,h,iNEWLINE",
@@ -242,7 +324,7 @@ describe!(reader_tests, {
         describe!(skip_rows_with_error, {
             describe!(when_on, {
                 describe!(and_the_reader_finds_a_malformed_line, {
-                    use crate::reader_tests::*;
+                    use crate::parser_tests::*;
                     it!(should_skip_the_line, {
                         let tests = [(
                             "a\",b,c\nd,e,f\ng,h\n",
@@ -286,7 +368,7 @@ describe!(reader_tests, {
                             res
                         }
                     }
-                    use crate::reader_tests::*;
+                    use crate::parser_tests::*;
                     it!(should_not_skip_the_error, {
                         let tests: [(BadParserBuilder, &str); 2] = [
                             (
@@ -313,7 +395,7 @@ describe!(reader_tests, {
             });
 
             describe!(when_off, {
-                use crate::reader_tests::*;
+                use crate::parser_tests::*;
                 it!(should_not_ignore_empty_rows, {
                     let tests = [(
                         "a\",b,c\nd,e,f\ng,h\n",
@@ -331,7 +413,7 @@ describe!(reader_tests, {
 
         describe!(skip_empty_rows, {
             describe!(when_on, {
-                use crate::reader_tests::*;
+                use crate::parser_tests::*;
                 it!(should_ignore_empty_rows, {
                     let tests = [(
                         "     \n\n\na,b,c\n\t\t\n\nd,e,f\n\n\ng,h,i\n\n\n\n",
@@ -363,7 +445,7 @@ describe!(reader_tests, {
             });
 
             describe!(when_off, {
-                use crate::reader_tests::*;
+                use crate::parser_tests::*;
                 it!(should_not_ignore_empty_rows, {
                     let tests = [(
                         "\n  \n\t\n",
@@ -388,7 +470,7 @@ describe!(reader_tests, {
 
         describe!(detect_columns, {
             describe!(when_on, {
-                use crate::reader_tests::*;
+                use crate::parser_tests::*;
                 it!(should_treat_first_row_in_csv_as_header_instead_of_record, {
                     let tests = [(
                         "a,b,c\nd,e,f\ng,h,i",
@@ -404,7 +486,7 @@ describe!(reader_tests, {
                 });
 
                 describe!(and_explicit_columns_have_also_been_given, {
-                    use crate::reader_tests::*;
+                    use crate::parser_tests::*;
                     it!(should_treat_first_row_as_record, {
                         let tests = [(
                             "a,b,c\nd,e,f\ng,h,i",
@@ -431,7 +513,7 @@ describe!(reader_tests, {
             });
 
             describe!(when_off, {
-                use crate::reader_tests::*;
+                use crate::parser_tests::*;
                 it!(should_treat_first_row_as_record, {
                     let tests = [(
                         "a,b,c\nd,e,f\ng,h,i",
@@ -451,7 +533,7 @@ describe!(reader_tests, {
 
         describe!(ltrim, {
             describe!(when_on, {
-                use crate::reader_tests::*;
+                use crate::parser_tests::*;
                 it!(should_ignore_whitespace_to_left_of_fields, {
                     let tests = [(
                         "   \"a\",  \u{A0}b,   \u{3000}c\n d,   e,f\n \t\tg,h, \u{A0}\u{3000}\ti",
@@ -469,7 +551,7 @@ describe!(reader_tests, {
             });
 
             describe!(when_off, {
-                use crate::reader_tests::*;
+                use crate::parser_tests::*;
                 it!(should_keep_whitespace_to_left_of_fields, {
                     let tests = [(
                         "   a,  \u{A0}b,   \u{3000}c\n d,   e,f\n \t\tg,h, \u{A0}\u{3000}\ti",
@@ -489,7 +571,7 @@ describe!(reader_tests, {
 
         describe!(rtrim, {
             describe!(when_on, {
-                use crate::reader_tests::*;
+                use crate::parser_tests::*;
                 it!(should_ignore_whitespace_to_right_of_fields, {
                     let tests = [(
                         "\"a\"   ,b  \u{A0},c   \u{3000}\nd ,e   ,f\ng \t\t,h,i \u{A0}\u{3000}\t",
@@ -507,7 +589,7 @@ describe!(reader_tests, {
             });
 
             describe!(when_off, {
-                use crate::reader_tests::*;
+                use crate::parser_tests::*;
                 it!(should_keep_whitespace_to_right_of_fields, {
                     let tests = [(
                         "a   ,b  \u{A0},c   \u{3000}\nd ,e   ,f\ng \t\t,h,i \u{A0}\u{3000}\t",
@@ -527,7 +609,7 @@ describe!(reader_tests, {
 
         describe!(trim, {
             describe!(when_on, {
-                use crate::reader_tests::*;
+                use crate::parser_tests::*;
                 it!(should_ignore_whitespace_to_left_and_right_of_fields, {
                     let tests = [(
                         "   a   ,  \u{A0}b  \u{A0},   \u{3000}c   \u{3000}\n d ,   e   ,f\n \t\tg \t\t,h, \u{A0}\u{3000}\ti\u{A0}\u{3000}\t",
@@ -545,7 +627,7 @@ describe!(reader_tests, {
             });
 
             describe!(when_off, {
-                use crate::reader_tests::*;
+                use crate::parser_tests::*;
                 it!(should_keep_whitespace_to_left_and_right_of_fields, {
                     let tests = [(
                         "   a   ,  \u{A0}b  \u{A0},   \u{3000}c   \u{3000}\n d ,   e   ,f\n \t\tg \t\t,h, \u{A0}\u{3000}\ti \u{A0}\u{3000}\t",
@@ -619,7 +701,7 @@ describe!(reader_tests, {
 
     describe!(when_csv_is_malformed, {
         describe!(because_a_field_is_malformed, {
-            pub use crate::reader_tests::*;
+            pub use crate::parser_tests::*;
             it!(should_return_an_err_when_parse_results_are_collected, {
                 let tests = [
                     ("ab\"cd", "Non-quoted fields cannot contain quotation marks"),
@@ -640,7 +722,7 @@ describe!(reader_tests, {
             describe!(
                 because_a_record_has_more_or_fewer_fields_than_number_of_columns,
                 {
-                    pub use crate::reader_tests::*;
+                    pub use crate::parser_tests::*;
                     it!(should_return_err, {
                         let tests = [
                             (
