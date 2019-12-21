@@ -5,8 +5,8 @@ use std::io::BufRead;
 pub fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("fib 20", |b| {
         b.iter(|| {
-            let csv = File::open("./large.csv").unwrap();
-            for _record in std::io::BufReader::new(csv).lines() {}
+            let csv = File::open("./data/test.csv").unwrap();
+            for _line in std::io::BufReader::new(csv).lines() {}
         })
     });
 }
