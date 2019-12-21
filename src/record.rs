@@ -10,11 +10,10 @@ pub struct Records<R> {
 /// CSV record.
 #[derive(Debug)]
 pub struct Record {
-    /// Contents of the record.
-    buf: Vec<u8>,
-    // TODO Add methods to avoid directly exposing this field.
-    /// Ranges describing locations of fields within `buf`.
-    pub(crate) field_bounds: Vec<Range<usize>>,
+    /// Contents of record.
+    buf: String,
+    /// Locations of fields within `buf`.
+    field_bounds: Vec<Range<usize>>,
 }
 
 impl<R> Records<R> {
@@ -34,16 +33,23 @@ where
 }
 
 impl<'a> Record {
-    pub(crate) fn new(buf: Vec<u8>, field_bounds: Vec<Range<usize>>) -> Self {
+    pub(crate) fn new(buf: String, field_bounds: Vec<Range<usize>>) -> Self {
         Self { buf, field_bounds }
+    }
+
+    pub(crate) fn num_fields(&self) -> usize {
+        self.field_bounds.len()
+    }
+
+    pub(crate) fn set_num_fields(&mut self, num_fields: usize) {
+        self.field_bounds.resize(num_fields, 0..0);
     }
 
     /// Returns record's fields as strings.
     pub fn fields(&self) -> Vec<&str> {
-        let buf_as_str = unsafe { std::str::from_utf8_unchecked(&self.buf) };
         self.field_bounds
             .iter()
-            .map(|bounds| &buf_as_str[bounds.clone()])
+            .map(|bounds| &self.buf[bounds.clone()])
             .collect()
     }
 }

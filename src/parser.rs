@@ -257,7 +257,7 @@ where
             }
         }
 
-        let record_buf = self.current_record_buffer.take_inner();
+        let record_buf = self.current_record_buffer.take_inner_as_string();
         let record = Record::new(record_buf, field_bounds);
 
         Some(Ok(record))
@@ -424,8 +424,8 @@ where
         columns: &mut Option<Vec<String>>,
     ) -> Option<Result<Record>> {
         match (&mut record, &columns) {
-            (Some(Ok(record)), Some(columns)) if record.field_bounds.len() < columns.len() => {
-                record.field_bounds.resize(columns.len(), 0..0);
+            (Some(Ok(record)), Some(columns)) if record.num_fields() < columns.len() => {
+                record.set_num_fields(columns.len());
             }
             _ => (),
         };
@@ -437,8 +437,8 @@ where
         columns: &mut Option<Vec<String>>,
     ) -> Option<Result<Record>> {
         match (&mut record, &columns) {
-            (Some(Ok(record)), Some(columns)) if record.field_bounds.len() > columns.len() => {
-                record.field_bounds.truncate(columns.len());
+            (Some(Ok(record)), Some(columns)) if record.num_fields() > columns.len() => {
+                record.set_num_fields(columns.len());
             }
             _ => (),
         };
@@ -450,10 +450,10 @@ where
         columns: &mut Option<Vec<String>>,
     ) -> Option<Result<Record>> {
         match (&record, &columns) {
-            (Some(Ok(rec)), Some(cols)) if cols.len() == rec.field_bounds.len() => record,
+            (Some(Ok(rec)), Some(cols)) if cols.len() == rec.num_fields() => record,
             (Some(Ok(rec)), Some(cols)) => Some(Err(ErrorKind::UnequalNumFields {
                 expected_num: cols.len(),
-                num: rec.field_bounds.len(),
+                num: rec.num_fields(),
             })),
             (Some(Ok(rec)), None) => {
                 let found_columns = rec.fields().iter().map(|f| f.to_string()).collect();
@@ -469,10 +469,10 @@ where
         columns: &mut Option<Vec<String>>,
     ) -> Option<Result<Record>> {
         match (&record, &columns) {
-            (Some(Ok(rec)), Some(cols)) if cols.len() == rec.field_bounds.len() => record,
+            (Some(Ok(rec)), Some(cols)) if cols.len() == rec.num_fields() => record,
             (Some(Ok(rec)), Some(cols)) => Some(Err(ErrorKind::UnequalNumFields {
                 expected_num: cols.len(),
-                num: rec.field_bounds.len(),
+                num: rec.num_fields(),
             })),
             (Some(Ok(rec)), None) => {
                 let found_columns = rec.fields().iter().map(|f| f.to_string()).collect();
@@ -581,9 +581,11 @@ where
         }
     }
 
-    fn take_inner(&mut self) -> Vec<u8> {
+    fn take_inner_as_string(&mut self) -> String {
         let buf_capacity = self.buf.capacity();
-        std::mem::replace(&mut self.buf, Vec::with_capacity(buf_capacity))
+        let old_buf = std::mem::replace(&mut self.buf, Vec::with_capacity(buf_capacity));
+        // This is safe because `buf` is checked to be valid UTF-8.
+        unsafe { String::from_utf8_unchecked(old_buf) }
     }
 
     fn append_next_line(&mut self) -> Option<Result<usize>> {
