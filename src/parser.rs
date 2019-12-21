@@ -24,12 +24,12 @@ type FieldParser<Parser> = fn(&mut Parser, start: usize) -> Option<Result<(Range
 
 /// CSV parser.
 pub struct Parser<R> {
-    /// Buffer containing contents of current record.
-    current_record_buffer: RecordBuffer<R>,
     /// Column names, if any.
     columns: Option<Vec<String>>,
     /// Configuration settings.
     config: Config,
+    /// Buffer containing contents of current record.
+    current_record_buffer: RecordBuffer<R>,
     /// Callback(s) to perform after a line is read.
     on_read_line: Vec<OnReadLine<R>>,
     /// Callback(s) to perform after a record is created but before it is returned.
@@ -603,23 +603,12 @@ where
                     .take(read_limit as u64)
                     .read_until(*last, &mut self.buf)
                 {
-                    Ok(0) => {
-                        if bytes_read == 0 {
-                            return None;
-                        } else {
-                            self.len_trailing_newline = 0;
-                            break;
-                        }
+                    Ok(0) if bytes_read == 0 => return None,
+                    Ok(0) => break self.len_trailing_newline = 0,
+                    Ok(_n) if self.buf.ends_with(&self.newline) => {
+                        break self.len_trailing_newline = self.newline.len()
                     }
-                    Ok(n) => {
-                        if self.buf.ends_with(&self.newline) {
-                            self.len_trailing_newline = self.newline.len();
-                            break;
-                        } else {
-                            bytes_read += n;
-                            continue;
-                        }
-                    }
+                    Ok(n) => bytes_read += n,
                     Err(e) => return Some(Err(ErrorKind::Io(e))),
                 }
             }
