@@ -59,6 +59,12 @@ impl ParserBuilder {
         }
     }
 
+    /// Sets comment indicator to given bytes.
+    pub fn comment(&mut self, comment: &[u8]) -> &mut Self {
+        self.config.comment.replace(comment.to_vec());
+        self
+    }
+
     /// Sets the escape character to the given byte.
     config!(escape, escape, u8);
 
@@ -133,12 +139,15 @@ where
     R: Read,
 {
     fn new(csv: R, config: Config) -> Self {
-        let current_record_buffer = RecordBuffer::new(csv, &config.newline, config.max_record_size);
+        let current_record_buffer = RecordBuffer::new(csv, &config);
 
         let on_read_line = {
             let mut on_read_line: Vec<OnReadLine<R>> = vec![];
             if config.should_skip_empty_rows {
                 on_read_line.push(Self::on_read_line_skip_empty_lines);
+            }
+            if config.comment.is_some() {
+                on_read_line.push(Self::on_read_line_skip_comments);
             }
             on_read_line
         };
@@ -502,8 +511,23 @@ where
     ) -> Option<Result<usize>> {
         let mut curr_read_attempt = last_read_attempt;
         while let Some(Ok(_bytes_read)) = &curr_read_attempt {
-            let line = current_record_buffer.as_str();
-            if line.trim().is_empty() {
+            if current_record_buffer.is_only_whitespace() {
+                current_record_buffer.clear();
+                curr_read_attempt = current_record_buffer.append_next_line();
+            } else {
+                break;
+            }
+        }
+        curr_read_attempt
+    }
+
+    fn on_read_line_skip_comments(
+        current_record_buffer: &mut RecordBuffer<R>,
+        last_read_attempt: Option<Result<usize>>,
+    ) -> Option<Result<usize>> {
+        let mut curr_read_attempt = last_read_attempt;
+        while let Some(Ok(_bytes_read)) = &curr_read_attempt {
+            if current_record_buffer.is_comment() {
                 current_record_buffer.clear();
                 curr_read_attempt = current_record_buffer.append_next_line();
             } else {
@@ -520,6 +544,7 @@ where
 #[derive(Clone)]
 struct Config {
     columns: Option<Vec<String>>,
+    comment: Option<Vec<u8>>,
     escape: u8,
     max_record_size: usize,
     newline: Vec<u8>,
@@ -536,6 +561,7 @@ struct Config {
 
 struct RecordBuffer<R> {
     buf: Vec<u8>,
+    comment: Option<Vec<u8>>,
     len_trailing_newline: usize,
     line_count: usize,
     max_record_size: usize,
@@ -547,6 +573,7 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             columns: None,
+            comment: None,
             escape: b'"',
             max_record_size: 4096,
             newline: vec![b'\n'],
@@ -567,13 +594,14 @@ impl<R> RecordBuffer<R>
 where
     R: Read,
 {
-    fn new(reader: R, newline: &[u8], max_record_size: usize) -> Self {
+    fn new(reader: R, config: &Config) -> Self {
         Self {
             buf: vec![],
+            comment: config.comment.clone(),
             len_trailing_newline: 0,
             line_count: 0,
-            max_record_size,
-            newline: newline.to_vec(),
+            max_record_size: config.max_record_size,
+            newline: config.newline.to_vec(),
             reader: BufReader::new(reader),
         }
     }
@@ -620,6 +648,17 @@ where
         match std::str::from_utf8(&self.buf) {
             Ok(_valid_utf8) => Some(Ok(bytes_read)),
             Err(e) => Some(Err(ErrorKind::Utf8(e))),
+        }
+    }
+
+    fn is_only_whitespace(&self) -> bool {
+        self.as_str().trim().is_empty()
+    }
+
+    fn is_comment(&self) -> bool {
+        match &self.comment {
+            Some(comment) => self.buf.starts_with(comment),
+            _ => false,
         }
     }
 

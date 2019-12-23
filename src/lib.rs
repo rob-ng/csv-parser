@@ -123,6 +123,21 @@ describe!(parser_tests, {
     });
 
     describe!(configuration, {
+        describe!(comment, {
+            use crate::parser_tests::*;
+            it!(
+                should_cause_parser_to_skip_lines_starting_with_comment_indicator,
+                {
+                    let tests = [
+                    ("### This is a comment\na,b,c\n### Another comment", vec![vec!["a", "b", "c"]], "Setting `comment` should cause lines starting with that value to be skipped")
+                ];
+                    let mut reader = ParserBuilder::new();
+                    reader.comment(b"###");
+                    run_tests_pass(reader, &tests);
+                }
+            );
+        });
+
         describe!(separator, {
             use crate::parser_tests::*;
             it!(should_change_separator_character, {

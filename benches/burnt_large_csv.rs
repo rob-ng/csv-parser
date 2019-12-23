@@ -8,6 +8,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             let csv = File::open("./data/test.csv").unwrap();
             let mut rdr = ReaderBuilder::new();
             let mut rdr = rdr
+                .comment(Some(b'#'))
                 .trim(Trim::All)
                 .has_headers(true)
                 .flexible(true)
