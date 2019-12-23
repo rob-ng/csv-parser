@@ -24,8 +24,6 @@ type FieldParser<Parser> = fn(&mut Parser, start: usize) -> Option<Result<(Range
 
 /// CSV parser.
 pub struct Parser<R> {
-    /// Column names, if any.
-    columns: Option<Vec<String>>,
     /// Configuration settings.
     config: Config,
     /// Buffer containing contents of current record.
@@ -173,7 +171,6 @@ where
 
         Parser {
             current_record_buffer,
-            columns: config.columns.clone(),
             config,
             on_read_line,
             on_record,
@@ -182,9 +179,9 @@ where
     }
 
     pub fn headers(&mut self) -> std::result::Result<&[String], Error> {
-        if self.columns.is_none() {
+        if self.config.columns.is_none() {
             return match self.next_record() {
-                Some(Ok(_bytes_read)) => match &self.columns {
+                Some(Ok(_bytes_read)) => match &self.config.columns {
                     Some(cols) => Ok(cols),
                     None => unreachable!(),
                 },
@@ -192,7 +189,7 @@ where
                 None => Ok(&[]),
             };
         }
-        match &self.columns {
+        match &self.config.columns {
             Some(columns) => Ok(columns),
             None => Ok(&[]),
         }
@@ -217,7 +214,7 @@ where
         };
 
         let next_record = self.record();
-        let columns = &mut self.columns;
+        let columns = &mut self.config.columns;
         match self
             .on_record
             .iter()
@@ -233,7 +230,7 @@ where
     }
 
     fn record(&mut self) -> Option<Result<Record>> {
-        let expected_num_fields = self.columns.as_ref().map_or(1, |cols| cols.len());
+        let expected_num_fields = self.config.columns.as_ref().map_or(1, |cols| cols.len());
         let mut field_bounds = Vec::with_capacity(expected_num_fields);
 
         let mut start = 0;
