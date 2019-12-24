@@ -730,7 +730,7 @@ describe!(parser_tests, {
                     ),
                 ];
                 let mut reader = ParserBuilder::new();
-                reader.separator(b',').quote(b'"');
+                reader.separator(b',').quote(b'"').trim(false);
                 run_tests_fail(reader, &tests);
             });
 

@@ -154,12 +154,15 @@ where
 
         let on_record = {
             let mut on_record: Vec<OnRecord> = vec![];
-            if config.should_relax_column_count_less {
-                on_record.push(Self::on_record_relax_headers_less);
-            }
-            if config.should_relax_column_count_more {
-                on_record.push(Self::on_record_relax_headers_more);
-            }
+            match (
+                config.should_relax_column_count_less,
+                config.should_relax_column_count_more,
+            ) {
+                (false, false) => (),
+                (true, false) => on_record.push(Self::on_record_relax_headers_less),
+                (false, true) => on_record.push(Self::on_record_relax_headers_more),
+                (true, true) => on_record.push(Self::on_record_relax_headers),
+            };
             on_record.push(if config.should_detect_headers {
                 Self::on_record_detect_headers
             } else {
@@ -259,7 +262,12 @@ where
 
             match self.current_record_buffer.get_unchecked(start) {
                 c if c == self.config.separator => start += 1,
-                _c => unreachable!(),
+                _c => {
+                    return Some(Err(ErrorKind::BadField {
+                        col: end,
+                        msg: String::from("Fields cannot contain trailing values"),
+                    }))
+                }
             }
         }
 
@@ -335,25 +343,11 @@ where
 macro_rules! parse_field {
     (left, $self:expr, $start:expr) => {{
         let first_byte = $self.current_record_buffer.get($start)?;
-        if first_byte == &$self.config.quote {
-            Some($self.quote($start).and_then(|(bounds, end)| {
-                match $self.current_record_buffer.get(end) {
-                    Some(&c)
-                        if c == $self.config.separator
-                            || end >= $self.current_record_buffer.len_sans_newline() =>
-                    {
-                        Ok((bounds, end))
-                    }
-                    None => Ok((bounds, end)),
-                    Some(&_c) => Err(ErrorKind::BadField {
-                        col: end,
-                        msg: String::from("Quoted fields cannot contain trailing unquoted values"),
-                    }),
-                }
-            }))
+        Some(if *first_byte == $self.config.quote {
+            $self.quote($start)
         } else {
-            Some($self.text($start))
-        }
+            $self.text($start)
+        })
     }};
 
     (right, $self:expr, $start:expr) => {{
@@ -444,6 +438,19 @@ where
     ) -> Option<Result<Record>> {
         match (&mut record, &headers) {
             (Some(Ok(record)), Some(headers)) if record.num_fields() > headers.len() => {
+                record.set_num_fields(headers.len());
+            }
+            _ => (),
+        };
+        record
+    }
+
+    fn on_record_relax_headers(
+        mut record: Option<Result<Record>>,
+        headers: &mut Option<Vec<String>>,
+    ) -> Option<Result<Record>> {
+        match (&mut record, &headers) {
+            (Some(Ok(record)), Some(headers)) if record.num_fields() != headers.len() => {
                 record.set_num_fields(headers.len());
             }
             _ => (),
