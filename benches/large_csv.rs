@@ -9,7 +9,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             let mut parser_builder = ParserBuilder::new();
             let parser = parser_builder
                 .trim(true)
-                .detect_columns(true)
+                .detect_headers(true)
                 .skip_empty_rows(true)
                 .relax_column_count(true)
                 .comment(b"#")

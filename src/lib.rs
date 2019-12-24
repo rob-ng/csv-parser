@@ -483,7 +483,7 @@ describe!(parser_tests, {
             });
         });
 
-        describe!(detect_columns, {
+        describe!(detect_headers, {
             describe!(when_on, {
                 use crate::parser_tests::*;
                 it!(should_treat_first_row_in_csv_as_header_instead_of_record, {
@@ -493,14 +493,14 @@ describe!(parser_tests, {
                             vec!["d", "e", "f"],
                             vec!["g", "h", "i"],
                         ],
-                        "Turning on `detect_columns` should prevent first row from being returned as a record",
+                        "Turning on `detect_headers` should prevent first row from being returned as a record",
                     )];
                     let mut reader = ParserBuilder::new();
-                    reader.separator(b',').quote(b'"').detect_columns(true);
+                    reader.separator(b',').quote(b'"').detect_headers(true);
                     run_tests_pass(reader, &tests);
                 });
 
-                describe!(and_explicit_columns_have_also_been_given, {
+                describe!(and_explicit_headers_have_also_been_given, {
                     use crate::parser_tests::*;
                     it!(should_treat_first_row_as_record, {
                         let tests = [(
@@ -510,14 +510,14 @@ describe!(parser_tests, {
                                 vec!["d", "e", "f"],
                                 vec!["g", "h", "i"],
                             ],
-                            "Proving columns via `columns` should override `detect_columns` and cause the first row to be treated as a record",
+                            "Proving headers via `headers` should override `detect_headers` and cause the first row to be treated as a record",
                         )];
                         let mut reader = ParserBuilder::new();
                         reader
                             .separator(b',')
                             .quote(b'"')
-                            .detect_columns(true)
-                            .columns(vec![
+                            .detect_headers(true)
+                            .headers(vec![
                                 String::from("a"),
                                 String::from("b"),
                                 String::from("c"),
@@ -537,10 +537,10 @@ describe!(parser_tests, {
                             vec!["d", "e", "f"],
                             vec!["g", "h", "i"],
                         ],
-                        "Turning off `detect_columns` should cause the first row to be treated as a record",
+                        "Turning off `detect_headers` should cause the first row to be treated as a record",
                     )];
                     let mut reader = ParserBuilder::new();
-                    reader.separator(b',').quote(b'"').detect_columns(false);
+                    reader.separator(b',').quote(b'"').detect_headers(false);
                     run_tests_pass(reader, &tests);
                 });
             });
@@ -735,18 +735,18 @@ describe!(parser_tests, {
             });
 
             describe!(
-                because_a_record_has_more_or_fewer_fields_than_number_of_columns,
+                because_a_record_has_more_or_fewer_fields_than_number_of_headers,
                 {
                     pub use crate::parser_tests::*;
                     it!(should_return_err, {
                         let tests = [
                             (
                                 "a,b\nd",
-                                "Records cannot have fewer fields than there are columns",
+                                "Records cannot have fewer fields than there are headers",
                             ),
                             (
                                 "a,b\nd,e,f",
-                                "Records cannot have more fields than there are columns",
+                                "Records cannot have more fields than there are headers",
                             ),
                         ];
                         let mut reader = ParserBuilder::new();

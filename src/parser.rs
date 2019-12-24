@@ -8,7 +8,7 @@ pub struct ParserBuilder {
     config: Config,
 }
 
-type Result<T> = std::result::Result<T, ErrorKind>;
+type FieldParser<Parser> = fn(&mut Parser, start: usize) -> Option<Result<(Range<usize>, usize)>>;
 
 type OnReadLine<R> = fn(
     current_record_buffer: &mut RecordBuffer<R>,
@@ -17,10 +17,10 @@ type OnReadLine<R> = fn(
 
 type OnRecord = fn(
     curr_record: Option<Result<Record>>,
-    columns: &mut Option<Vec<String>>,
+    headers: &mut Option<Vec<String>>,
 ) -> Option<Result<Record>>;
 
-type FieldParser<Parser> = fn(&mut Parser, start: usize) -> Option<Result<(Range<usize>, usize)>>;
+type Result<T> = std::result::Result<T, ErrorKind>;
 
 /// CSV parser.
 pub struct Parser<R> {
@@ -59,6 +59,15 @@ impl ParserBuilder {
         }
     }
 
+    /// Sets column names for rows to given values. Overrides `detect_headers`.
+    pub fn headers(&mut self, headers: Vec<String>) -> &mut Self {
+        self.config.headers.replace(headers);
+        self
+    }
+
+    /// Determines whether first row should be treated as column names for subsequent rows.
+    config!(detect_headers, should_detect_headers);
+
     /// Sets comment indicator to given bytes.
     pub fn comment(&mut self, comment: &[u8]) -> &mut Self {
         self.config.comment.replace(comment.to_vec());
@@ -77,11 +86,11 @@ impl ParserBuilder {
         self
     }
 
-    /// Sets field separator to given byte.
-    config!(separator, separator, u8);
-
     /// Sets quote marker to given byte.
     config!(quote, quote, u8);
+
+    /// Sets field separator to given byte.
+    config!(separator, separator, u8);
 
     /// Determines whether fields should be left-trimmed of whitespace.
     config!(ltrim, should_ltrim_fields);
@@ -96,22 +105,13 @@ impl ParserBuilder {
         self
     }
 
-    /// Determines whether first row should be treated as column names for subsequent rows.
-    config!(detect_columns, should_detect_columns);
-
-    /// Sets column names for rows to given values. Overrides `detect_columns`.
-    pub fn columns(&mut self, columns: Vec<String>) -> &mut Self {
-        self.config.columns.replace(columns);
-        self
-    }
-
-    /// Determines whether records should be allowed to have fewer fields than the number of columns.
+    /// Determines whether records should be allowed to have fewer fields than the number of headers.
     config!(relax_column_count_less, should_relax_column_count_less);
 
-    /// Determines whether records should be allowed to have more fields than the number of columns.
+    /// Determines whether records should be allowed to have more fields than the number of headers.
     config!(relax_column_count_more, should_relax_column_count_more);
 
-    /// Determines whether records should be allowed to have more *or* fewer fields than the number of columns.
+    /// Determines whether records should be allowed to have more *or* fewer fields than the number of headers.
     pub fn relax_column_count(&mut self, should_relax: bool) -> &mut Self {
         self.config.should_relax_column_count_less = should_relax;
         self.config.should_relax_column_count_more = should_relax;
@@ -155,15 +155,15 @@ where
         let on_record = {
             let mut on_record: Vec<OnRecord> = vec![];
             if config.should_relax_column_count_less {
-                on_record.push(Self::on_record_relax_columns_less);
-            };
+                on_record.push(Self::on_record_relax_headers_less);
+            }
             if config.should_relax_column_count_more {
-                on_record.push(Self::on_record_relax_columns_more);
-            };
-            on_record.push(if config.should_detect_columns {
-                Self::on_record_detect_columns
+                on_record.push(Self::on_record_relax_headers_more);
+            }
+            on_record.push(if config.should_detect_headers {
+                Self::on_record_detect_headers
             } else {
-                Self::on_record_log_columns
+                Self::on_record_log_headers
             });
             if config.should_skip_rows_with_error {
                 on_record.push(Self::on_record_skip_malformed);
@@ -188,9 +188,9 @@ where
     }
 
     pub fn headers(&mut self) -> std::result::Result<&[String], Error> {
-        if self.config.columns.is_none() {
+        if self.config.headers.is_none() {
             return match self.next_record() {
-                Some(Ok(_bytes_read)) => match &self.config.columns {
+                Some(Ok(_bytes_read)) => match &self.config.headers {
                     Some(cols) => Ok(cols),
                     None => unreachable!(),
                 },
@@ -198,8 +198,8 @@ where
                 None => Ok(&[]),
             };
         }
-        match &self.config.columns {
-            Some(columns) => Ok(columns),
+        match &self.config.headers {
+            Some(headers) => Ok(headers),
             None => Ok(&[]),
         }
     }
@@ -223,11 +223,11 @@ where
         };
 
         let next_record = self.record();
-        let columns = &mut self.config.columns;
+        let headers = &mut self.config.headers;
         match self
             .on_record
             .iter()
-            .fold(next_record, |record, on_record| on_record(record, columns))
+            .fold(next_record, |record, on_record| on_record(record, headers))
         {
             Some(Ok(record)) => Some(Ok(record)),
             Some(Err(e)) => Some(Err(Error::new(self.current_record_buffer.line_count, e))),
@@ -239,7 +239,7 @@ where
     }
 
     fn record(&mut self) -> Option<Result<Record>> {
-        let expected_num_fields = self.config.columns.as_ref().map_or(1, |cols| cols.len());
+        let expected_num_fields = self.config.headers.as_ref().map_or(1, |cols| cols.len());
         let mut field_bounds = Vec::with_capacity(expected_num_fields);
 
         let mut start = 0;
@@ -425,64 +425,64 @@ impl<R> Parser<R>
 where
     R: Read,
 {
-    fn on_record_relax_columns_less(
+    fn on_record_relax_headers_less(
         mut record: Option<Result<Record>>,
-        columns: &mut Option<Vec<String>>,
+        headers: &mut Option<Vec<String>>,
     ) -> Option<Result<Record>> {
-        match (&mut record, &columns) {
-            (Some(Ok(record)), Some(columns)) if record.num_fields() < columns.len() => {
-                record.set_num_fields(columns.len());
+        match (&mut record, &headers) {
+            (Some(Ok(record)), Some(headers)) if record.num_fields() < headers.len() => {
+                record.set_num_fields(headers.len());
             }
             _ => (),
         };
         record
     }
 
-    fn on_record_relax_columns_more(
+    fn on_record_relax_headers_more(
         mut record: Option<Result<Record>>,
-        columns: &mut Option<Vec<String>>,
+        headers: &mut Option<Vec<String>>,
     ) -> Option<Result<Record>> {
-        match (&mut record, &columns) {
-            (Some(Ok(record)), Some(columns)) if record.num_fields() > columns.len() => {
-                record.set_num_fields(columns.len());
+        match (&mut record, &headers) {
+            (Some(Ok(record)), Some(headers)) if record.num_fields() > headers.len() => {
+                record.set_num_fields(headers.len());
             }
             _ => (),
         };
         record
     }
 
-    fn on_record_log_columns(
+    fn on_record_log_headers(
         record: Option<Result<Record>>,
-        columns: &mut Option<Vec<String>>,
+        headers: &mut Option<Vec<String>>,
     ) -> Option<Result<Record>> {
-        match (&record, &columns) {
+        match (&record, &headers) {
             (Some(Ok(rec)), Some(cols)) if cols.len() == rec.num_fields() => record,
             (Some(Ok(rec)), Some(cols)) => Some(Err(ErrorKind::UnequalNumFields {
                 expected_num: cols.len(),
                 num: rec.num_fields(),
             })),
             (Some(Ok(rec)), None) => {
-                let found_columns = rec.fields().iter().map(|f| f.to_string()).collect();
-                columns.replace(found_columns);
+                let found_headers = rec.fields().iter().map(|f| f.to_string()).collect();
+                headers.replace(found_headers);
                 record
             }
             _ => record,
         }
     }
 
-    fn on_record_detect_columns(
+    fn on_record_detect_headers(
         record: Option<Result<Record>>,
-        columns: &mut Option<Vec<String>>,
+        headers: &mut Option<Vec<String>>,
     ) -> Option<Result<Record>> {
-        match (&record, &columns) {
+        match (&record, &headers) {
             (Some(Ok(rec)), Some(cols)) if cols.len() == rec.num_fields() => record,
             (Some(Ok(rec)), Some(cols)) => Some(Err(ErrorKind::UnequalNumFields {
                 expected_num: cols.len(),
                 num: rec.num_fields(),
             })),
             (Some(Ok(rec)), None) => {
-                let found_columns = rec.fields().iter().map(|f| f.to_string()).collect();
-                columns.replace(found_columns);
+                let found_headers = rec.fields().iter().map(|f| f.to_string()).collect();
+                headers.replace(found_headers);
                 None
             }
             _ => record,
@@ -491,7 +491,7 @@ where
 
     fn on_record_skip_malformed(
         record: Option<Result<Record>>,
-        _columns: &mut Option<Vec<String>>,
+        _headers: &mut Option<Vec<String>>,
     ) -> Option<Result<Record>> {
         match &record {
             Some(Err(ErrorKind::BadField { .. }))
@@ -543,14 +543,14 @@ where
 ///////////////////////////////////////////////////////////////////////////////
 #[derive(Clone)]
 struct Config {
-    columns: Option<Vec<String>>,
+    headers: Option<Vec<String>>,
     comment: Option<Vec<u8>>,
     escape: u8,
     max_record_size: usize,
     newline: Vec<u8>,
     quote: u8,
     separator: u8,
-    should_detect_columns: bool,
+    should_detect_headers: bool,
     should_ltrim_fields: bool,
     should_rtrim_fields: bool,
     should_relax_column_count_less: bool,
@@ -572,14 +572,14 @@ struct RecordBuffer<R> {
 impl Default for Config {
     fn default() -> Self {
         Config {
-            columns: None,
+            headers: None,
             comment: None,
             escape: b'"',
             max_record_size: 4096,
             newline: vec![b'\n'],
             quote: b'"',
             separator: b',',
-            should_detect_columns: false,
+            should_detect_headers: false,
             should_ltrim_fields: true,
             should_rtrim_fields: true,
             should_relax_column_count_less: false,
