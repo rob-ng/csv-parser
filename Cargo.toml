@@ -13,6 +13,9 @@ jestr = { path = "../jestr" }
 criterion = "0.3"
 burntcsv = {package = "csv", version = "1.1"}
 
+[profile.release]
+debug = true
+
 [[bench]]
 name = "large_csv"
 harness = false
@@ -24,6 +27,3 @@ harness = false
 [[bench]]
 name = "just_read"
 harness = false
-
-[profile.release]
-debug = true
