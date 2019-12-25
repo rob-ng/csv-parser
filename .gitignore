@@ -3,3 +3,4 @@
 Cargo.lock
 TODO
 perf.data
+flamegraph.svg

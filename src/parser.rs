@@ -682,7 +682,7 @@ where
     // 20% improvement from inlining this. No idea why.
     #[inline]
     fn get_unchecked(&self, index: usize) -> u8 {
-        self.buf[index]
+        unsafe { *self.buf.get_unchecked(index) }
     }
 
     // 3.5% improvement from inlining this.

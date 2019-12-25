@@ -7,9 +7,9 @@ fn main() {
         let mut parser_builder = ParserBuilder::new();
         let parser = parser_builder
             .trim(false)
-            .detect_headers(true)
-            .skip_empty_rows(true)
-            .relax_column_count(true)
+            .detect_headers(false)
+            .skip_empty_rows(false)
+            .relax_column_count(false)
             //.comment(b"#")
             .from_reader(csv);
         for _record in parser.records() {}
