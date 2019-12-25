@@ -630,17 +630,17 @@ where
         if self.buf.len() < self.max_record_size {
             // We allow 1 more byte than the limit to indicate the limit has been eclipsed.
             let read_limit = self.max_record_size - self.buf.len() + 1;
+            let mut reader = self.reader.by_ref().take(read_limit as u64);
             loop {
-                match self
-                    .reader
-                    .by_ref()
-                    .take(read_limit as u64)
-                    .read_until(*last, &mut self.buf)
-                {
+                match reader.read_until(*last, &mut self.buf) {
                     Ok(0) if bytes_read == 0 => return None,
-                    Ok(0) => break self.len_trailing_newline = 0,
+                    Ok(0) => {
+                        self.len_trailing_newline = 0;
+                        break;
+                    }
                     Ok(_n) if self.buf.ends_with(&self.newline) => {
-                        break self.len_trailing_newline = self.newline.len()
+                        self.len_trailing_newline = self.newline.len();
+                        break;
                     }
                     Ok(n) => bytes_read += n,
                     Err(e) => return Some(Err(ErrorKind::Io(e))),
