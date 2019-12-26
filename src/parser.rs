@@ -217,8 +217,8 @@ where
         match self
             .on_read_line
             .iter()
-            .fold(read_attempt, |line, on_read_line| {
-                on_read_line(current_record_buffer, line)
+            .fold(read_attempt, |read_attempt, on_read_line| {
+                on_read_line(current_record_buffer, read_attempt)
             }) {
             Some(Ok(buf)) => buf,
             Some(Err(e)) => return Some(Err(Error::new(self.current_record_buffer.line_count, e))),
@@ -260,15 +260,14 @@ where
                 break;
             }
 
-            match self.current_record_buffer.get_unchecked(start) {
-                c if c == self.config.separator => start += 1,
-                _c => {
-                    return Some(Err(ErrorKind::BadField {
-                        col: end,
-                        msg: String::from("Fields cannot contain trailing values"),
-                    }))
-                }
+            if self.current_record_buffer.get_unchecked(start) != self.config.separator {
+                return Some(Err(ErrorKind::BadField {
+                    col: end,
+                    msg: String::from("Fields cannot contain trailing values"),
+                }));
             }
+
+            start += 1;
         }
 
         let record_buf = self.current_record_buffer.take_inner_as_string();
@@ -283,7 +282,9 @@ where
 
         let mut end = start;
         loop {
-            while end < self.current_record_buffer.len_sans_newline() {
+            let mut max = self.current_record_buffer.len_sans_newline();
+
+            while end < max {
                 let curr = self.current_record_buffer.get_unchecked(end);
                 let next_index = end + 1;
 
@@ -292,6 +293,7 @@ where
                         Some(&c) if c == self.config.quote => {
                             // Remove escape character from buffer leaving only escaped value.
                             self.current_record_buffer.remove(end);
+                            max -= 1;
                         }
                         _ if curr == self.config.quote => return Ok((start..end, next_index)),
                         _ => (),
@@ -302,15 +304,18 @@ where
 
                 end += 1
             }
+
             let old_buf_len = self.current_record_buffer.len();
+
             match self.current_record_buffer.append_next_line() {
                 Some(Ok(_nread)) => end = old_buf_len,
                 Some(Err(e)) => return Err(e),
                 None => {
                     return Err(ErrorKind::BadField {
+                        // TODO Check that this is correct. End should be less than old_buf_len. Think I just want end.
                         col: end - old_buf_len,
                         msg: String::from("Quoted field is missing closing quotation"),
-                    })
+                    });
                 }
             };
         }
@@ -627,9 +632,10 @@ where
             .last()
             .expect("Newline terminator cannot be empty");
         let mut bytes_read = 0;
-        if self.buf.len() < self.max_record_size {
+        let buf_len = self.buf.len();
+        if buf_len < self.max_record_size {
             // We allow 1 more byte than the limit to indicate the limit has been eclipsed.
-            let read_limit = self.max_record_size - self.buf.len() + 1;
+            let read_limit = self.max_record_size - buf_len + 1;
             let mut reader = self.reader.by_ref().take(read_limit as u64);
             loop {
                 match reader.read_until(*last, &mut self.buf) {
