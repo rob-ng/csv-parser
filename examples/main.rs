@@ -2,7 +2,7 @@ use csv::*;
 use std::fs::File;
 
 fn main() {
-    for _i in 0..10000 {
+    for _i in 0..1 {
         let csv = File::open("./data/test_no_whitespace.csv").unwrap();
         let mut parser_builder = ParserBuilder::new();
         let parser = parser_builder

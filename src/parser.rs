@@ -366,6 +366,7 @@ macro_rules! parse_field {
                         end = parse_field!(trim_start, $self, end);
                     }
                 }
+                // TODO get rid of this match
                 match $self.current_record_buffer.get(end) {
                     Some(&c)
                         if c == $self.config.separator
@@ -627,18 +628,18 @@ where
 
     fn append_next_line(&mut self) -> Option<Result<usize>> {
         self.line_count += 1;
-        let last = self
+        let last = *self
             .newline
             .last()
             .expect("Newline terminator cannot be empty");
         let mut bytes_read = 0;
-        let buf_len = self.buf.len();
-        if buf_len < self.max_record_size {
+        let initial_buf_len = self.buf.len();
+        if initial_buf_len < self.max_record_size {
             // We allow 1 more byte than the limit to indicate the limit has been eclipsed.
-            let read_limit = self.max_record_size - buf_len + 1;
+            let read_limit = self.max_record_size - initial_buf_len + 1;
             let mut reader = self.reader.by_ref().take(read_limit as u64);
             loop {
-                match reader.read_until(*last, &mut self.buf) {
+                match reader.read_until(last, &mut self.buf) {
                     Ok(0) if bytes_read == 0 => return None,
                     Ok(0) => {
                         self.len_trailing_newline = 0;
@@ -658,7 +659,7 @@ where
                 max_record_size: self.max_record_size,
             }));
         }
-        match std::str::from_utf8(&self.buf) {
+        match std::str::from_utf8(&self.buf[initial_buf_len..]) {
             Ok(_valid_utf8) => Some(Ok(bytes_read)),
             Err(e) => Some(Err(ErrorKind::Utf8(e))),
         }
