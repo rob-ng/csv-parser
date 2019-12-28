@@ -652,7 +652,7 @@ where
     }
 
     fn is_only_whitespace(&self) -> bool {
-        self.as_str().trim().is_empty()
+        self.as_str().trim_start().is_empty()
     }
 
     fn is_comment(&self) -> bool {
