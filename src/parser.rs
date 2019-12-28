@@ -666,37 +666,31 @@ where
         unsafe { std::str::from_utf8_unchecked(&self.buf) }
     }
 
-    // 20% improvement from inlining this. No idea why.
     #[inline]
     fn get(&self, index: usize) -> Option<&u8> {
         self.buf.get(index)
     }
 
-    // 20% improvement from inlining this. No idea why.
     #[inline]
     fn get_unchecked(&self, index: usize) -> u8 {
         unsafe { *self.buf.get_unchecked(index) }
     }
 
-    // 3.5% improvement from inlining this.
     #[inline]
     fn len(&self) -> usize {
         self.buf.len()
     }
 
-    // 20% improvement from inlining this. No idea why.
     #[inline]
     fn len_sans_newline(&self) -> usize {
         self.buf.len() - self.len_trailing_newline
     }
 
-    // Negligible improvement from inlining this.
     #[inline]
     fn remove(&mut self, index: usize) {
         self.buf.remove(index);
     }
 
-    // Negligible improvement from inlining this.
     #[inline]
     fn clear(&mut self) {
         self.buf.clear();
