@@ -546,7 +546,7 @@ describe!(parser_tests, {
             });
         });
 
-        describe!(ltrim, {
+        describe!(trim_start, {
             describe!(when_on, {
                 use crate::parser_tests::*;
                 it!(should_ignore_whitespace_to_left_of_fields, {
@@ -557,10 +557,14 @@ describe!(parser_tests, {
                             vec!["d", "e", "f"],
                             vec!["g", "h", "i"],
                         ],
-                        "Turning on `ltrim` should remove all whitespace before fields (quoted and unquoted)",
+                        "Turning on `trim_start` should remove all whitespace before fields (quoted and unquoted)",
                     )];
                     let mut reader = ParserBuilder::new();
-                    reader.separator(b',').quote(b'"').ltrim(true).rtrim(false);
+                    reader
+                        .separator(b',')
+                        .quote(b'"')
+                        .trim_start(true)
+                        .trim_end(false);
                     run_tests_pass(reader, &tests);
                 });
             });
@@ -575,16 +579,20 @@ describe!(parser_tests, {
                             vec![" d", "   e", "f"],
                             vec![" \t\tg", "h", " \u{A0}\u{3000}\ti"],
                         ],
-                        "Turning *off* `ltrim` should *not* remove whitespace before fields",
+                        "Turning *off* `trim_start` should *not* remove whitespace before fields",
                     )];
                     let mut reader = ParserBuilder::new();
-                    reader.separator(b',').quote(b'"').ltrim(false).rtrim(false);
+                    reader
+                        .separator(b',')
+                        .quote(b'"')
+                        .trim_start(false)
+                        .trim_end(false);
                     run_tests_pass(reader, &tests);
                 });
             });
         });
 
-        describe!(rtrim, {
+        describe!(trim_end, {
             describe!(when_on, {
                 use crate::parser_tests::*;
                 it!(should_ignore_whitespace_to_right_of_fields, {
@@ -595,10 +603,14 @@ describe!(parser_tests, {
                             vec!["d", "e", "f"],
                             vec!["g", "h", "i"],
                         ],
-                        "Turning on `rtrim` should remove all types of whitespace after fields (quoted and unquoted)",
+                        "Turning on `trim_end` should remove all types of whitespace after fields (quoted and unquoted)",
                     )];
                     let mut reader = ParserBuilder::new();
-                    reader.separator(b',').quote(b'"').ltrim(false).rtrim(true);
+                    reader
+                        .separator(b',')
+                        .quote(b'"')
+                        .trim_start(false)
+                        .trim_end(true);
                     run_tests_pass(reader, &tests);
                 });
             });
@@ -613,10 +625,14 @@ describe!(parser_tests, {
                             vec!["d ", "e   ", "f"],
                             vec!["g \t\t", "h", "i \u{A0}\u{3000}\t"],
                         ],
-                        "Turning *off* `rtrim` should *not* remove whitespace after fields",
+                        "Turning *off* `trim_end` should *not* remove whitespace after fields",
                     )];
                     let mut reader = ParserBuilder::new();
-                    reader.separator(b',').quote(b'"').ltrim(false).rtrim(false);
+                    reader
+                        .separator(b',')
+                        .quote(b'"')
+                        .trim_start(false)
+                        .trim_end(false);
                     run_tests_pass(reader, &tests);
                 });
             });

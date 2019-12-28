@@ -92,16 +92,16 @@ impl ParserBuilder {
     /// Sets field separator to given byte.
     config!(separator, separator, u8);
 
-    /// Determines whether fields should be left-trimmed of whitespace.
-    config!(ltrim, should_ltrim_fields);
+    /// Determines whether fields should be start-trimmed of whitespace.
+    config!(trim_start, should_trim_start_fields);
 
-    /// Determines whether fields should be right-trimmed of whitespace.
-    config!(rtrim, should_rtrim_fields);
+    /// Determines whether fields should be end-trimmed of whitespace.
+    config!(trim_end, should_trim_end_fields);
 
-    /// Determines whether fields should be left *and* right trimmed of whitespace.
+    /// Determines whether fields should be start *and* end trimmed of whitespace.
     pub fn trim(&mut self, should_trim: bool) -> &mut Self {
-        self.config.should_ltrim_fields = should_trim;
-        self.config.should_rtrim_fields = should_trim;
+        self.config.should_trim_start_fields = should_trim;
+        self.config.should_trim_end_fields = should_trim;
         self
     }
 
@@ -174,10 +174,13 @@ where
             on_record
         };
 
-        let parse_field = match (config.should_ltrim_fields, config.should_rtrim_fields) {
+        let parse_field = match (
+            config.should_trim_start_fields,
+            config.should_trim_end_fields,
+        ) {
             (false, false) => Self::parse_field,
-            (true, false) => Self::parse_field_ltrim,
-            (false, true) => Self::parse_field_rtrim,
+            (true, false) => Self::parse_field_trim_start,
+            (false, true) => Self::parse_field_trim_end,
             (true, true) => Self::parse_field_trim,
         };
 
@@ -345,7 +348,7 @@ where
 }
 
 macro_rules! parse_field {
-    (left, $self:expr, $start:expr) => {{
+    (default, $self:expr, $start:expr) => {{
         let first_byte = $self.current_record_buffer.get($start)?;
         Some(if *first_byte == $self.config.quote {
             $self.quote($start)
@@ -354,7 +357,7 @@ macro_rules! parse_field {
         })
     }};
 
-    (right, $self:expr, $start:expr) => {{
+    (with_trim_end, $self:expr, $start:expr) => {{
         let first_byte = $self.current_record_buffer.get($start)?;
         if first_byte == &$self.config.quote {
             Some($self.quote($start).and_then(|(bounds, mut end)| {
@@ -389,21 +392,21 @@ where
     R: Read,
 {
     fn parse_field(&mut self, start: usize) -> Option<Result<(Range<usize>, usize)>> {
-        parse_field!(left, self, start)
+        parse_field!(default, self, start)
     }
 
-    fn parse_field_ltrim(&mut self, start: usize) -> Option<Result<(Range<usize>, usize)>> {
+    fn parse_field_trim_start(&mut self, start: usize) -> Option<Result<(Range<usize>, usize)>> {
         let start = parse_field!(trim_start, self, start);
-        parse_field!(left, self, start)
+        parse_field!(default, self, start)
     }
 
-    fn parse_field_rtrim(&mut self, start: usize) -> Option<Result<(Range<usize>, usize)>> {
-        parse_field!(right, self, start)
+    fn parse_field_trim_end(&mut self, start: usize) -> Option<Result<(Range<usize>, usize)>> {
+        parse_field!(with_trim_end, self, start)
     }
 
     fn parse_field_trim(&mut self, start: usize) -> Option<Result<(Range<usize>, usize)>> {
         let start = parse_field!(trim_start, self, start);
-        parse_field!(right, self, start)
+        parse_field!(with_trim_end, self, start)
     }
 }
 
@@ -550,8 +553,8 @@ struct Config {
     quote: u8,
     separator: u8,
     should_detect_headers: bool,
-    should_ltrim_fields: bool,
-    should_rtrim_fields: bool,
+    should_trim_start_fields: bool,
+    should_trim_end_fields: bool,
     should_relax_field_count_less: bool,
     should_relax_field_count_more: bool,
     should_skip_empty_rows: bool,
@@ -579,8 +582,8 @@ impl Default for Config {
             quote: b'"',
             separator: b',',
             should_detect_headers: false,
-            should_ltrim_fields: true,
-            should_rtrim_fields: true,
+            should_trim_start_fields: true,
+            should_trim_end_fields: true,
             should_relax_field_count_less: false,
             should_relax_field_count_more: false,
             should_skip_empty_rows: true,
