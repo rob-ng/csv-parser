@@ -312,8 +312,7 @@ where
                 Some(Err(e)) => return Err(e),
                 None => {
                     return Err(ErrorKind::BadField {
-                        // TODO Check that this is correct. End should be less than old_buf_len. Think I just want end.
-                        col: end - old_buf_len,
+                        col: old_buf_len - end,
                         msg: String::from("Quoted field is missing closing quotation"),
                     });
                 }
@@ -332,7 +331,7 @@ where
                     return Err(ErrorKind::BadField {
                         col: end,
                         msg: format!(
-                            "Unquoted fields cannot contain quote character: `{}`",
+                            "Unquoted fields cannot contain quote byte: `{}`",
                             self.config.quote
                         ),
                     })
