@@ -658,7 +658,7 @@ where
     fn is_comment(&self) -> bool {
         match &self.comment {
             Some(comment) => self.buf.starts_with(comment),
-            _ => false,
+            _ => unreachable!(),
         }
     }
 

@@ -7,7 +7,8 @@ pub fn criterion_benchmark(c: &mut Criterion) {
     let parser = parser_builder
         .trim(true)
         .detect_headers(true)
-        .skip_empty_rows(true)
+        //.skip_empty_rows(true)
+        //.skip_rows_with_error(true)
         .relax_field_count(true)
         .comment(b"#");
     c.bench_function("fib 20", |b| {
