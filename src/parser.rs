@@ -5,6 +5,7 @@ use std::ops::Range;
 /// Configurer and creator of `Parser`s.
 #[derive(Default)]
 pub struct ParserBuilder {
+    /// Configuration settings.
     config: Config,
 }
 
@@ -193,6 +194,9 @@ where
         }
     }
 
+    /// Returns the fields of the first record read by the `Parser`.
+    ///
+    /// This will cause the `Parser` to read a record if none have been read.
     pub fn headers(&mut self) -> std::result::Result<&[String], Error> {
         if self.config.headers.is_none() {
             return match self.next_record() {
@@ -210,10 +214,12 @@ where
         }
     }
 
+    /// Converts the `Parser` into an iterator of `Record`s.
     pub fn records(self) -> Records<R> {
         Records::new(self)
     }
 
+    /// Returns the next `Record` (if any) parsed from the underlying reader.
     pub(crate) fn next_record(&mut self) -> Option<std::result::Result<Record, Error>> {
         let read_attempt = self.current_record_buffer.append_next_line();
         let current_record_buffer = &mut self.current_record_buffer;
