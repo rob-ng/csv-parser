@@ -59,13 +59,13 @@ impl ParserBuilder {
         }
     }
 
-    /// Sets column names for rows to given values. Overrides `detect_headers`.
+    /// Sets header names for rows to given values. Overrides `detect_headers`.
     pub fn headers(&mut self, headers: Vec<String>) -> &mut Self {
         self.config.headers.replace(headers);
         self
     }
 
-    /// Determines whether first row should be treated as column names for subsequent rows.
+    /// Determines whether first row should be treated as header names for subsequent rows.
     config!(detect_headers, should_detect_headers);
 
     /// Sets comment indicator to given bytes.
@@ -106,15 +106,15 @@ impl ParserBuilder {
     }
 
     /// Determines whether records should be allowed to have fewer fields than the number of headers.
-    config!(relax_column_count_less, should_relax_column_count_less);
+    config!(relax_field_count_less, should_relax_field_count_less);
 
     /// Determines whether records should be allowed to have more fields than the number of headers.
-    config!(relax_column_count_more, should_relax_column_count_more);
+    config!(relax_field_count_more, should_relax_field_count_more);
 
     /// Determines whether records should be allowed to have more *or* fewer fields than the number of headers.
-    pub fn relax_column_count(&mut self, should_relax: bool) -> &mut Self {
-        self.config.should_relax_column_count_less = should_relax;
-        self.config.should_relax_column_count_more = should_relax;
+    pub fn relax_field_count(&mut self, should_relax: bool) -> &mut Self {
+        self.config.should_relax_field_count_less = should_relax;
+        self.config.should_relax_field_count_more = should_relax;
         self
     }
 
@@ -155,8 +155,8 @@ where
         let on_record = {
             let mut on_record: Vec<OnRecord> = vec![];
             match (
-                config.should_relax_column_count_less,
-                config.should_relax_column_count_more,
+                config.should_relax_field_count_less,
+                config.should_relax_field_count_more,
             ) {
                 (false, false) => (),
                 (true, false) => on_record.push(Self::on_record_relax_headers_less),
@@ -566,8 +566,8 @@ struct Config {
     should_detect_headers: bool,
     should_ltrim_fields: bool,
     should_rtrim_fields: bool,
-    should_relax_column_count_less: bool,
-    should_relax_column_count_more: bool,
+    should_relax_field_count_less: bool,
+    should_relax_field_count_more: bool,
     should_skip_empty_rows: bool,
     should_skip_rows_with_error: bool,
 }
@@ -595,8 +595,8 @@ impl Default for Config {
             should_detect_headers: false,
             should_ltrim_fields: true,
             should_rtrim_fields: true,
-            should_relax_column_count_less: false,
-            should_relax_column_count_more: false,
+            should_relax_field_count_less: false,
+            should_relax_field_count_more: false,
             should_skip_empty_rows: true,
             should_skip_rows_with_error: false,
         }

@@ -205,7 +205,7 @@ describe!(parser_tests, {
             });
         });
 
-        describe!(relax_column_count, {
+        describe!(relax_field_count, {
             describe!(when_on, {
                 use crate::parser_tests::*;
                 it!(
@@ -214,10 +214,10 @@ describe!(parser_tests, {
                         let tests = [(
                             "a,b,c\nd,e,f,g\nh\n",
                             vec![vec!["a", "b", "c"], vec!["d", "e", "f"], vec!["h", "", ""]],
-                            "Turning on `relax_column_count` should handle records with either too many or too few fields",
+                            "Turning on `relax_field_count` should handle records with either too many or too few fields",
                         )];
                         let mut reader = ParserBuilder::new();
-                        reader.separator(b',').quote(b'"').relax_column_count(true);
+                        reader.separator(b',').quote(b'"').relax_field_count(true);
                         run_tests_pass(reader, &tests);
                     }
                 );
@@ -230,17 +230,17 @@ describe!(parser_tests, {
                     {
                         let tests = [(
                             "a,b,c\nd,e,f,g\nh\n",
-                            "Turning off `relax_column_count` should cause records with too many or too few fields to return Errs",
+                            "Turning off `relax_field_count` should cause records with too many or too few fields to return Errs",
                         )];
                         let mut reader = ParserBuilder::new();
-                        reader.separator(b',').quote(b'"').relax_column_count(false);
+                        reader.separator(b',').quote(b'"').relax_field_count(false);
                         run_tests_fail(reader, &tests);
                     }
                 );
             });
         });
 
-        describe!(relax_column_count_more, {
+        describe!(relax_field_count_more, {
             describe!(when_on, {
                 use crate::parser_tests::*;
                 it!(should_allow_for_records_with_missing_fields_and_give_said_fields_default_values, {
@@ -251,10 +251,10 @@ describe!(parser_tests, {
                             vec!["d", "e", "f"],
                             vec!["h", "i", "j"],
                         ],
-                        "Turning on `relax_column_count_more` should ignore any extra fields",
+                        "Turning on `relax_field_count_more` should ignore any extra fields",
                     )];
                     let mut reader = ParserBuilder::new();
-                    reader.separator(b',').quote(b'"').relax_column_count_more(true);
+                    reader.separator(b',').quote(b'"').relax_field_count_more(true);
                     run_tests_pass(reader, &tests);
                 });
             });
@@ -266,20 +266,20 @@ describe!(parser_tests, {
                     {
                         let tests = [(
                             "a,b,c\nd,e,f,g\nh,i,j,k,l\n",
-                            "Turning off `relax_column_count_more` should cause records with too many fields to return Errs",
+                            "Turning off `relax_field_count_more` should cause records with too many fields to return Errs",
                         )];
                         let mut reader = ParserBuilder::new();
                         reader
                             .separator(b',')
                             .quote(b'"')
-                            .relax_column_count_more(false);
+                            .relax_field_count_more(false);
                         run_tests_fail(reader, &tests);
                     }
                 );
             });
         });
 
-        describe!(relax_column_count_less, {
+        describe!(relax_field_count_less, {
             describe!(when_on, {
                 use crate::parser_tests::*;
                 it!(should_allow_for_records_with_missing_fields_and_give_said_fields_default_values, {
@@ -290,10 +290,10 @@ describe!(parser_tests, {
                             vec!["d", "e", ""],
                             vec!["g", "", ""],
                         ],
-                        "Turning on `relax_column_count_less` should fill any missing fields with empty string",
+                        "Turning on `relax_field_count_less` should fill any missing fields with empty string",
                     )];
                     let mut reader = ParserBuilder::new();
-                    reader.separator(b',').quote(b'"').relax_column_count_less(true);
+                    reader.separator(b',').quote(b'"').relax_field_count_less(true);
                     run_tests_pass(reader, &tests);
                 });
             });
@@ -305,13 +305,13 @@ describe!(parser_tests, {
                     {
                         let tests = [(
                         "a,b,c\nd,e\ng\n",
-                        "Turning off `relax_column_count_less` should cause records with too few fields to return Errs",
+                        "Turning off `relax_field_count_less` should cause records with too few fields to return Errs",
                     )];
                         let mut reader = ParserBuilder::new();
                         reader
                             .separator(b',')
                             .quote(b'"')
-                            .relax_column_count_less(false);
+                            .relax_field_count_less(false);
                         run_tests_fail(reader, &tests);
                     }
                 );

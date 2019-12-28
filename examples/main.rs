@@ -9,7 +9,7 @@ fn main() {
             .trim(false)
             .detect_headers(false)
             .skip_empty_rows(false)
-            .relax_column_count(false)
+            .relax_field_count(false)
             //.comment(b"#")
             .from_reader(csv);
         for _record in parser.records() {}

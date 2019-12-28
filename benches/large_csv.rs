@@ -11,7 +11,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                 .trim(true)
                 .detect_headers(true)
                 .skip_empty_rows(true)
-                .relax_column_count(true)
+                .relax_field_count(true)
                 .comment(b"#")
                 .from_reader(csv);
             for _record in parser.records() {}
