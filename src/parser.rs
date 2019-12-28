@@ -366,20 +366,7 @@ macro_rules! parse_field {
                         end = parse_field!(trim_start, $self, end);
                     }
                 }
-                // TODO get rid of this match
-                match $self.current_record_buffer.get(end) {
-                    Some(&c)
-                        if c == $self.config.separator
-                            || end >= $self.current_record_buffer.len_sans_newline() =>
-                    {
-                        return Ok((bounds, end))
-                    }
-                    None => return Ok((bounds, end)),
-                    _ => Err(ErrorKind::BadField {
-                        col: end,
-                        msg: String::from("Quoted fields cannot contain trailing unquoted values"),
-                    }),
-                }
+                Ok((bounds, end))
             }))
         } else {
             Some($self.text($start).map(|(mut bounds, end)| {
