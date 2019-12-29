@@ -9,17 +9,17 @@ pub struct ParserBuilder {
     config: Config,
 }
 
-type FieldParser<Parser> = fn(&mut Parser, start: usize) -> Option<Result<(Range<usize>, usize)>>;
+type FieldParser<Parser> = fn(&mut Parser, start: usize) -> Result<(Range<usize>, usize)>;
 
 type OnReadLine<R> = fn(
     current_record_buffer: &mut RecordBuffer<R>,
-    last_read_attempt: Option<Result<usize>>,
-) -> Option<Result<usize>>;
+    last_read_attempt: Result<usize>,
+) -> Result<usize>;
 
 type OnRecord = fn(
-    curr_record: Option<Result<Record>>,
+    curr_record: Result<Option<Record>>,
     headers: &mut Option<Vec<String>>,
-) -> Option<Result<Record>>;
+) -> Result<Option<Record>>;
 
 type Result<T> = std::result::Result<T, ErrorKind>;
 
@@ -60,15 +60,6 @@ impl ParserBuilder {
         }
     }
 
-    /// Sets header names for rows to given values. Overrides `detect_headers`.
-    pub fn headers(&mut self, headers: Vec<String>) -> &mut Self {
-        self.config.headers.replace(headers);
-        self
-    }
-
-    /// Determines whether first row should be treated as header names for subsequent rows.
-    config!(detect_headers, should_detect_headers);
-
     /// Sets comment indicator to given bytes.
     pub fn comment(&mut self, comment: &[u8]) -> &mut Self {
         self.config.comment.replace(comment.to_vec());
@@ -77,6 +68,15 @@ impl ParserBuilder {
 
     /// Sets the escape character to the given byte.
     config!(escape, escape, u8);
+
+    /// Sets header names for rows to given values. Overrides `detect_headers`.
+    pub fn headers(&mut self, headers: Vec<String>) -> &mut Self {
+        self.config.headers.replace(headers);
+        self
+    }
+
+    /// Determines whether first row should be treated as header names for subsequent rows.
+    config!(detect_headers, should_detect_headers);
 
     /// Sets maximum record size. Parser longer than this value will result in an error.
     config!(max_record_size, max_record_size, usize);
@@ -200,7 +200,7 @@ where
     pub fn headers(&mut self) -> std::result::Result<&[String], Error> {
         if self.config.headers.is_none() {
             return match self.next_record() {
-                Some(Ok(_bytes_read)) => match &self.config.headers {
+                Some(Ok(_nread)) => match &self.config.headers {
                     Some(cols) => Ok(cols),
                     None => unreachable!(),
                 },
@@ -221,46 +221,46 @@ where
 
     /// Returns the next `Record` (if any) parsed from the underlying reader.
     pub(crate) fn next_record(&mut self) -> Option<std::result::Result<Record, Error>> {
-        let read_attempt = self.current_record_buffer.append_next_line();
+        let initial_read_attempt = self.current_record_buffer.append_next_line();
         let current_record_buffer = &mut self.current_record_buffer;
-        match self
+
+        let read_attempt = self
             .on_read_line
             .iter()
-            .fold(read_attempt, |read_attempt, on_read_line| {
+            .fold(initial_read_attempt, |read_attempt, on_read_line| {
                 on_read_line(current_record_buffer, read_attempt)
-            }) {
-            Some(Ok(buf)) => buf,
-            Some(Err(e)) => return Some(Err(Error::new(self.current_record_buffer.line_count, e))),
-            None => return None,
-        };
+            });
 
-        let next_record = self.record();
-        let headers = &mut self.config.headers;
-        match self
-            .on_record
-            .iter()
-            .fold(next_record, |record, on_record| on_record(record, headers))
-        {
-            Some(Ok(record)) => Some(Ok(record)),
-            Some(Err(e)) => Some(Err(Error::new(self.current_record_buffer.line_count, e))),
-            None => {
-                self.current_record_buffer.clear();
-                self.next_record()
+        match read_attempt {
+            Ok(0) => None,
+            Err(e) => Some(Err(Error::new(self.current_record_buffer.line_count, e))),
+            Ok(_nread) => {
+                let next_record = Some(self.record()).transpose();
+                let headers = &mut self.config.headers;
+
+                match self
+                    .on_record
+                    .iter()
+                    .fold(next_record, |record, on_record| on_record(record, headers))
+                {
+                    Ok(Some(record)) => Some(Ok(record)),
+                    Ok(None) => {
+                        self.current_record_buffer.clear();
+                        self.next_record()
+                    }
+                    Err(e) => Some(Err(Error::new(self.current_record_buffer.line_count, e))),
+                }
             }
         }
     }
 
-    fn record(&mut self) -> Option<Result<Record>> {
+    fn record(&mut self) -> Result<Record> {
         let expected_num_fields = self.config.headers.as_ref().map_or(1, |cols| cols.len());
         let mut field_bounds = Vec::with_capacity(expected_num_fields);
 
         let mut start = 0;
         loop {
-            let (bounds, end) = match (self.parse_field)(self, start) {
-                Some(Ok(result)) => result,
-                Some(Err(e)) => return Some(Err(e)),
-                None => break,
-            };
+            let (bounds, end) = (self.parse_field)(self, start)?;
 
             start = end;
             field_bounds.push(bounds);
@@ -270,10 +270,10 @@ where
             }
 
             if self.current_record_buffer.get_unchecked(start) != self.config.separator {
-                return Some(Err(ErrorKind::BadField {
+                return Err(ErrorKind::BadField {
                     col: end,
                     msg: String::from("Fields cannot contain trailing values"),
-                }));
+                });
             }
 
             start += 1;
@@ -282,7 +282,7 @@ where
         let record_buf = self.current_record_buffer.take_inner_as_string();
         let record = Record::new(record_buf, field_bounds);
 
-        Some(Ok(record))
+        Ok(record)
     }
 
     fn quote(&mut self, start: usize) -> Result<(Range<usize>, usize)> {
@@ -317,14 +317,14 @@ where
             let old_buf_len = self.current_record_buffer.len();
 
             match self.current_record_buffer.append_next_line() {
-                Some(Ok(_nread)) => end = old_buf_len,
-                Some(Err(e)) => return Err(e),
-                None => {
+                Ok(0) => {
                     return Err(ErrorKind::BadField {
                         col: old_buf_len - end,
                         msg: String::from("Quoted field is missing closing quotation"),
                     });
                 }
+                Ok(_nread) => end = old_buf_len,
+                Err(e) => return Err(e),
             };
         }
     }
@@ -355,34 +355,34 @@ where
 
 macro_rules! parse_field {
     (default, $self:expr, $start:expr) => {{
-        let first_byte = $self.current_record_buffer.get($start)?;
-        Some(if *first_byte == $self.config.quote {
-            $self.quote($start)
-        } else {
-            $self.text($start)
-        })
+        let first_byte = $self.current_record_buffer.get($start);
+        match first_byte {
+            Some(&byte) if byte == $self.config.quote => $self.quote($start),
+            _ => $self.text($start),
+        }
     }};
 
     (with_trim_end, $self:expr, $start:expr) => {{
-        let first_byte = $self.current_record_buffer.get($start)?;
-        if first_byte == &$self.config.quote {
-            Some($self.quote($start).and_then(|(bounds, mut end)| {
-                if let Some(&c) = $self.current_record_buffer.get(end) {
-                    if c != $self.config.separator
-                        && end < $self.current_record_buffer.len_sans_newline()
-                    {
-                        end = parse_field!(trim_start, $self, end);
+        let first_byte = $self.current_record_buffer.get($start);
+        match first_byte {
+            Some(&byte) if byte == $self.config.quote => {
+                $self.quote($start).and_then(|(bounds, mut end)| {
+                    if let Some(&c) = $self.current_record_buffer.get(end) {
+                        if c != $self.config.separator
+                            && end < $self.current_record_buffer.len_sans_newline()
+                        {
+                            end = parse_field!(trim_start, $self, end);
+                        }
                     }
-                }
-                Ok((bounds, end))
-            }))
-        } else {
-            Some($self.text($start).map(|(mut bounds, end)| {
+                    Ok((bounds, end))
+                })
+            }
+            _ => $self.text($start).map(|(mut bounds, end)| {
                 let buf_segment = &$self.current_record_buffer.as_str()[bounds.clone()];
                 let trimmed = buf_segment.trim_end().as_bytes();
                 bounds.end = bounds.start + trimmed.len();
                 (bounds, end)
-            }))
+            }),
         }
     }};
 
@@ -397,20 +397,20 @@ impl<R> Parser<R>
 where
     R: Read,
 {
-    fn parse_field(&mut self, start: usize) -> Option<Result<(Range<usize>, usize)>> {
+    fn parse_field(&mut self, start: usize) -> Result<(Range<usize>, usize)> {
         parse_field!(default, self, start)
     }
 
-    fn parse_field_trim_start(&mut self, start: usize) -> Option<Result<(Range<usize>, usize)>> {
+    fn parse_field_trim_start(&mut self, start: usize) -> Result<(Range<usize>, usize)> {
         let start = parse_field!(trim_start, self, start);
         parse_field!(default, self, start)
     }
 
-    fn parse_field_trim_end(&mut self, start: usize) -> Option<Result<(Range<usize>, usize)>> {
+    fn parse_field_trim_end(&mut self, start: usize) -> Result<(Range<usize>, usize)> {
         parse_field!(with_trim_end, self, start)
     }
 
-    fn parse_field_trim(&mut self, start: usize) -> Option<Result<(Range<usize>, usize)>> {
+    fn parse_field_trim(&mut self, start: usize) -> Result<(Range<usize>, usize)> {
         let start = parse_field!(trim_start, self, start);
         parse_field!(with_trim_end, self, start)
     }
@@ -421,11 +421,11 @@ where
     R: Read,
 {
     fn on_record_relax_headers_less(
-        mut record: Option<Result<Record>>,
+        mut record: Result<Option<Record>>,
         headers: &mut Option<Vec<String>>,
-    ) -> Option<Result<Record>> {
+    ) -> Result<Option<Record>> {
         match (&mut record, &headers) {
-            (Some(Ok(record)), Some(headers)) if record.num_fields() < headers.len() => {
+            (Ok(Some(record)), Some(headers)) if record.num_fields() < headers.len() => {
                 record.set_num_fields(headers.len());
             }
             _ => (),
@@ -434,11 +434,11 @@ where
     }
 
     fn on_record_relax_headers_more(
-        mut record: Option<Result<Record>>,
+        mut record: Result<Option<Record>>,
         headers: &mut Option<Vec<String>>,
-    ) -> Option<Result<Record>> {
+    ) -> Result<Option<Record>> {
         match (&mut record, &headers) {
-            (Some(Ok(record)), Some(headers)) if record.num_fields() > headers.len() => {
+            (Ok(Some(record)), Some(headers)) if record.num_fields() > headers.len() => {
                 record.set_num_fields(headers.len());
             }
             _ => (),
@@ -447,11 +447,11 @@ where
     }
 
     fn on_record_relax_headers(
-        mut record: Option<Result<Record>>,
+        mut record: Result<Option<Record>>,
         headers: &mut Option<Vec<String>>,
-    ) -> Option<Result<Record>> {
+    ) -> Result<Option<Record>> {
         match (&mut record, &headers) {
-            (Some(Ok(record)), Some(headers)) if record.num_fields() != headers.len() => {
+            (Ok(Some(record)), Some(headers)) if record.num_fields() != headers.len() => {
                 record.set_num_fields(headers.len());
             }
             _ => (),
@@ -460,16 +460,16 @@ where
     }
 
     fn on_record_log_headers(
-        record: Option<Result<Record>>,
+        record: Result<Option<Record>>,
         headers: &mut Option<Vec<String>>,
-    ) -> Option<Result<Record>> {
+    ) -> Result<Option<Record>> {
         match (&record, &headers) {
-            (Some(Ok(rec)), Some(cols)) if cols.len() == rec.num_fields() => record,
-            (Some(Ok(rec)), Some(cols)) => Some(Err(ErrorKind::UnequalNumFields {
+            (Ok(Some(rec)), Some(cols)) if cols.len() == rec.num_fields() => record,
+            (Ok(Some(rec)), Some(cols)) => Err(ErrorKind::UnequalNumFields {
                 expected_num: cols.len(),
                 num: rec.num_fields(),
-            })),
-            (Some(Ok(rec)), None) => {
+            }),
+            (Ok(Some(rec)), None) => {
                 let found_headers = rec.fields().iter().map(|f| f.to_string()).collect();
                 headers.replace(found_headers);
                 record
@@ -479,31 +479,30 @@ where
     }
 
     fn on_record_detect_headers(
-        record: Option<Result<Record>>,
+        record: Result<Option<Record>>,
         headers: &mut Option<Vec<String>>,
-    ) -> Option<Result<Record>> {
+    ) -> Result<Option<Record>> {
         match (&record, &headers) {
-            (Some(Ok(rec)), Some(cols)) if cols.len() == rec.num_fields() => record,
-            (Some(Ok(rec)), Some(cols)) => Some(Err(ErrorKind::UnequalNumFields {
+            (Ok(Some(rec)), Some(cols)) if cols.len() == rec.num_fields() => record,
+            (Ok(Some(rec)), Some(cols)) => Err(ErrorKind::UnequalNumFields {
                 expected_num: cols.len(),
                 num: rec.num_fields(),
-            })),
-            (Some(Ok(rec)), None) => {
+            }),
+            (Ok(Some(rec)), None) => {
                 let found_headers = rec.fields().iter().map(|f| f.to_string()).collect();
                 headers.replace(found_headers);
-                None
+                Ok(None)
             }
             _ => record,
         }
     }
 
     fn on_record_skip_malformed(
-        record: Option<Result<Record>>,
+        record: Result<Option<Record>>,
         _headers: &mut Option<Vec<String>>,
-    ) -> Option<Result<Record>> {
+    ) -> Result<Option<Record>> {
         match &record {
-            Some(Err(ErrorKind::BadField { .. }))
-            | Some(Err(ErrorKind::UnequalNumFields { .. })) => None,
+            Err(ErrorKind::BadField { .. }) | Err(ErrorKind::UnequalNumFields { .. }) => Ok(None),
             _ => record,
         }
     }
@@ -515,34 +514,34 @@ where
 {
     fn on_read_line_skip_empty_lines(
         current_record_buffer: &mut RecordBuffer<R>,
-        last_read_attempt: Option<Result<usize>>,
-    ) -> Option<Result<usize>> {
+        last_read_attempt: Result<usize>,
+    ) -> Result<usize> {
         let mut curr_read_attempt = last_read_attempt;
-        while let Some(Ok(_bytes_read)) = &curr_read_attempt {
-            if current_record_buffer.is_only_whitespace() {
-                current_record_buffer.clear();
-                curr_read_attempt = current_record_buffer.append_next_line();
-            } else {
-                break;
+        loop {
+            match curr_read_attempt {
+                Ok(nread) if nread > 0 && current_record_buffer.is_only_whitespace() => {
+                    current_record_buffer.clear();
+                    curr_read_attempt = current_record_buffer.append_next_line();
+                }
+                _ => return curr_read_attempt,
             }
         }
-        curr_read_attempt
     }
 
     fn on_read_line_skip_comments(
         current_record_buffer: &mut RecordBuffer<R>,
-        last_read_attempt: Option<Result<usize>>,
-    ) -> Option<Result<usize>> {
+        last_read_attempt: Result<usize>,
+    ) -> Result<usize> {
         let mut curr_read_attempt = last_read_attempt;
-        while let Some(Ok(_bytes_read)) = &curr_read_attempt {
-            if current_record_buffer.is_comment() {
-                current_record_buffer.clear();
-                curr_read_attempt = current_record_buffer.append_next_line();
-            } else {
-                break;
+        loop {
+            match curr_read_attempt {
+                Ok(nread) if nread > 0 && current_record_buffer.is_comment() => {
+                    current_record_buffer.clear();
+                    curr_read_attempt = current_record_buffer.append_next_line();
+                }
+                _ => return curr_read_attempt,
             }
         }
-        curr_read_attempt
     }
 }
 
@@ -621,13 +620,13 @@ where
         unsafe { String::from_utf8_unchecked(old_buf) }
     }
 
-    fn append_next_line(&mut self) -> Option<Result<usize>> {
+    fn append_next_line(&mut self) -> Result<usize> {
         self.line_count += 1;
         let last = *self
             .newline
             .last()
             .expect("Newline terminator cannot be empty");
-        let mut bytes_read = 0;
+        let mut nread = 0;
         let initial_buf_len = self.buf.len();
         if initial_buf_len < self.max_record_size {
             // We allow 1 more byte than the limit to indicate the limit has been eclipsed.
@@ -635,28 +634,32 @@ where
             let mut reader = self.reader.by_ref().take(read_limit as u64);
             loop {
                 match reader.read_until(last, &mut self.buf) {
-                    Ok(0) if bytes_read == 0 => return None,
+                    Ok(0) if nread == 0 => {
+                        return Ok(0);
+                    }
                     Ok(0) => {
                         self.len_trailing_newline = 0;
                         break;
                     }
-                    Ok(_n) if self.buf.ends_with(&self.newline) => {
-                        self.len_trailing_newline = self.newline.len();
-                        break;
+                    Ok(n) => {
+                        nread += n;
+                        if self.buf.ends_with(&self.newline) {
+                            self.len_trailing_newline = self.newline.len();
+                            break;
+                        }
                     }
-                    Ok(n) => bytes_read += n,
-                    Err(e) => return Some(Err(ErrorKind::Io(e))),
+                    Err(e) => return Err(ErrorKind::Io(e)),
                 }
             }
         }
         if self.buf.len() > self.max_record_size {
-            return Some(Err(ErrorKind::RecordTooLarge {
+            return Err(ErrorKind::RecordTooLarge {
                 max_record_size: self.max_record_size,
-            }));
+            });
         }
         match std::str::from_utf8(&self.buf[initial_buf_len..]) {
-            Ok(_valid_utf8) => Some(Ok(bytes_read)),
-            Err(e) => Some(Err(ErrorKind::Utf8(e))),
+            Ok(_valid_utf8) => Ok(nread),
+            Err(e) => Err(ErrorKind::Utf8(e)),
         }
     }
 
